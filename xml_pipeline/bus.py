@@ -40,7 +40,7 @@ log = logging.getLogger("xml_pipeline.bus")
 ListenerFunc = Callable[[bytes], Awaitable[Optional[bytes]]]
 T = TypeVar("T")
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class Response:
     xml: bytes
     message_id: Optional[str] = None
@@ -101,7 +101,17 @@ class MessageBus:
         self._locks = asyncio.Lock()
 
         self.pipeline = pipeline.Pipeline(schema_paths=schema_paths or [])
-        self._health_task = asyncio.create_task(self._health_checker())
+        self._health_task = None  # Lazy-initialized when event loop is running
+    
+    def _ensure_health_task(self):
+        """Ensure health checker task is running (lazy initialization)."""
+        if self._health_task is None:
+            try:
+                loop = asyncio.get_running_loop()
+                self._health_task = loop.create_task(self._health_checker())
+            except RuntimeError:
+                # No event loop running yet, that's ok
+                pass
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -115,6 +125,8 @@ class MessageBus:
         cardinality: str = "one",        # one | any | all
         flow: str = "request-response",
     ) -> bytes | List[bytes]:
+        self._ensure_health_task()  # Start health checker if needed
+        
         if flow != "request-response":
             raise ValueError("request() requires flow='request-response'")
 
@@ -353,11 +365,12 @@ class MessageBus:
                 pass
 
     async def close(self) -> None:
-        self._health_task.cancel()
-        try:
-            await self._health_task
-        except asyncio.CancelledError:
-            pass
+        if self._health_task is not None:
+            self._health_task.cancel()
+            try:
+                await self._health_task
+            except asyncio.CancelledError:
+                pass
 
         async with self._locks:
             for req in self._pending.values():
