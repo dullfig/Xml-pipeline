@@ -16,7 +16,7 @@ from typing import Dict, List
 
 from lxml import etree
 
-from agentserver.listeners.base import XMLListener
+from agentserver.listeners.xmlListener import XMLListener
 from agentserver.llm_connection import llm_pool
 from agentserver.prompts.no_paperclippers import MANIFESTO_MESSAGE
 
