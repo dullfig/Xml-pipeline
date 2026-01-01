@@ -56,7 +56,7 @@ class XMLListener:
         self,
         envelope_tree: etree._Element,
         convo_id: str,
-        sender_name: Optional[str],
+        sender_name: str,
     ) -> Optional[str]:
         """
         React to an incoming enveloped message.

@@ -16,8 +16,8 @@ from typing import Dict, List
 
 from lxml import etree
 
-from agentserver.listeners.xmlListener import XMLListener
-from agentserver.llm_connection import llm_pool
+from agentserver.xml_listener import XMLListener
+from agentserver.utils.llm_connection import llm_pool
 from agentserver.prompts.no_paperclippers import MANIFESTO_MESSAGE
 
 logger = logging.getLogger(__name__)

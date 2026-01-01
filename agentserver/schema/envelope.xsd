@@ -13,7 +13,7 @@
             <xs:sequence>
               <xs:element name="from" type="xs:string" minOccurs="1"/>
               <xs:element name="to" type="xs:string" minOccurs="0"/>
-              <xs:element name="convo_id" type="xs:string" minOccurs="0"/>
+              <xs:element name="thread" type="xs:string" minOccurs="0"/>
               <!-- Reserved for future standard fields (timestamp, priority, etc.) -->
               <xs:any namespace="##other" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
             </xs:sequence>
