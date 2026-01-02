@@ -1,4 +1,4 @@
-# agentserver/message_bus.py
+# agentserver/bus.py
 # Refactored January 01, 2026 – MessageBus with run() pump and out-of-band shutdown
 
 import asyncio
@@ -7,8 +7,8 @@ from typing import AsyncIterator, Callable, Dict, Optional, Awaitable
 
 from lxml import etree
 
-from .xml_listener import XMLListener
-from .utils.message import repair_and_canonicalize, XmlTamperError
+from agentserver.xml_listener import XMLListener
+from agentserver.utils.message import repair_and_canonicalize, XmlTamperError
 
 # Constants for Internal Physics
 ENV_NS = "https://xml-pipeline.org/ns/envelope/1"
