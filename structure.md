@@ -40,11 +40,11 @@ xml-pipeline/
 │   ├── main.py
 │   └── xml_listener.py
 ├── docs/
-│   ├── AgentServer.md
-│   ├── Local Privilege only.md
-│   ├── logic and iteration.md
+│   ├── agent-server.md
+│   ├── local-privilege-only.md
+│   ├── logic-and-iteration.md
 │   ├── prompt-no-paperclippers.md
-│   └── self_registration.md
+│   └── self-grammar-generation.md
 ├── scripts/
 │   └── generate_organism_key.py
 ├── tests/
@@ -57,4 +57,5 @@ xml-pipeline/
 ├── pyproject.toml
 ├── setup-project.ps1
 └── structure.md
+
 ```

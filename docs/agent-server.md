@@ -1,7 +1,3 @@
-This is a great idea. Your `README.md.bak` was a good start, but we’ve evolved the architecture significantly today. This updated executive summary captures the "Nervous System" philosophy and the rigorous cryptographic controls we've established.
-
-Here is a refined **Executive Summary** you can add to your `docs/` or update your `README.md` with:
-
 # AgentServer — Executive Summary (v1.0)
 **December 30, 2025**  
 **Architecture: Cryptographically Sovereign Multi-Agent Substrate**

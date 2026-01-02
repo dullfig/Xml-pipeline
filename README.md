@@ -17,7 +17,7 @@ AgentServer is a production-ready substrate for the `xml-pipeline` nervous syste
 - **XSD-to-Lark Generator:** A core utility that transcribes XSD schema definitions into EBNF Lark grammars. This enables the server to search untrusted data streams for specific XML patterns with mathematical precision.
 - **Auto-Descriptive Organs:** The base `XMLListener` class inspects its own instantiation parameters to generate a corresponding XSD. The tool itself tells the world how to use it.
 - **Protocol Agnostic:** To add a new field (like `<cc/>`) to the entire swarm, you simply update the central XSD. The entire organism's grammar updates instantly.
-- **[Read Further: Self-Registration & Autonomous Grammars](docs/self_registration.md)**
+- **[Read Further: Self-Registration & Autonomous Grammars](docs/self-grammar-generation.md)**
 
 ### 2. The Stack-Based Lifecycle
 - **UUID Custody:** UUID v4 thread identifiers are born via `<spawn-thread/>` and managed on a physical stack.
