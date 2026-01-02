@@ -16,6 +16,14 @@ xml-pipeline/
 │   │   ├── __init__.py
 │   │   ├── llm_connection.py
 │   │   └── llm_listener.py
+│   ├── message_bus/
+│   │   ├── __init__.py
+│   │   ├── bus.py
+│   │   ├── config.py
+│   │   ├── envelope.py
+│   │   ├── errors.py
+│   │   ├── scheduler.py
+│   │   └── thread.py
 │   ├── prompts/
 │   │   ├── grok_classic.py
 │   │   └── no_paperclippers.py
@@ -30,23 +38,17 @@ xml-pipeline/
 │   ├── __init__.py
 │   ├── agentserver.py
 │   ├── main.py
-│   ├── message_bus.py
 │   └── xml_listener.py
 ├── docs/
 │   ├── AgentServer.md
 │   ├── Local Privilege only.md
 │   ├── logic and iteration.md
-│   └── prompt-no-paperclippers.md
+│   ├── prompt-no-paperclippers.md
+│   └── self_registration.md
 ├── scripts/
 │   └── generate_organism_key.py
 ├── tests/
 │   └── __init__.py
-├── xml_pipeline.egg-info/
-│   ├── PKG-INFO
-│   ├── SOURCES.txt
-│   ├── dependency_links.txt
-│   ├── requires.txt
-│   └── top_level.txt
 ├── LICENSE
 ├── README.md
 ├── README.v0.md
@@ -55,5 +57,4 @@ xml-pipeline/
 ├── pyproject.toml
 ├── setup-project.ps1
 └── structure.md
-
 ```
