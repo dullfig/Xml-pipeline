@@ -1,104 +1,83 @@
 """
-xmllistener.py — The Sovereign Contract for All Capabilities
-
-In xml-pipeline, there are no "agents", no "tools", no "services".
-There are only bounded, reactive XMLListeners.
-
-Every capability in the organism — whether driven by an LLM,
-a pure function, a remote gateway, or privileged logic —
-must inherit from this class.
-
-This file is intentionally verbose and heavily documented.
-It is the constitution that all organs must obey.
+xml_listener.py — The Sovereign Contract for All Capabilities (v1.3)
 """
 
 from __future__ import annotations
-
-import uuid
-from typing import Optional, List, ClassVar
-from lxml import etree
+from typing import Optional, Type, Callable
+from pydantic import BaseModel
 
 class XMLListener:
     """
-    Base class for all reactive capabilities in the organism.
-
-    Key Invariants (never break these):
-    1. Listeners are passive. They never initiate. They only react.
-    2. They declare what they listen to via class variable.
-    3. They have a globally unique agent_name.
-    4. They receive the full parsed envelope tree (not raw XML).
-    5. They return only payload XML (never the envelope).
-    6. The MessageBus owns routing, threading, and envelope wrapping.
+    Base class for all reactive capabilities.
+    Now supports Autonomous Registration via Pydantic payload classes.
     """
 
-    # ===================================================================
-    # Required class declarations — must be overridden in subclasses
-    # ===================================================================
+    def __init__(
+        self,
+        name: str,
+        payload_class: Type[BaseModel],
+        handler: Callable[[dict], bytes],
+        description: Optional[str] = None
+    ):
+        self.agent_name = name
+        self.payload_class = payload_class
+        self.handler = handler
+        self.description = description or payload_class.__doc__ or "No description provided."
 
-    listens_to: ClassVar[List[str]] = []
-    """
-    List of full XML tags this listener reacts to.
-    Example: ["{https://example.org/chat}message", "{https://example.org/calc}request"]
-    """
-
-    agent_name: ClassVar[str] = ""
-    """
-    Globally unique name for this instance.
-    Enforced by MessageBus at registration.
-    Used in <from/>, routing, logging, and known_peers prompts.
-    """
-
-    # ===================================================================
-    # Core handler — the only method that does work
-    # ===================================================================
+        # In v1.3, the root tag is derived from the payload class name
+        self.root_tag = payload_class.__name__
+        self.listens_to = [self.root_tag]
 
     async def handle(
         self,
-        envelope_tree: etree._Element,
-        convo_id: str,
+        payload_dict: dict,
+        thread_id: str,
         sender_name: str,
-    ) -> Optional[str]:
+    ) -> Optional[bytes]:
         """
-        React to an incoming enveloped message.
-
-        Parameters:
-            envelope_tree: Full <env:message> root (parsed, post-repair/C14N)
-            convo_id: Current conversation UUID (injected or preserved by bus)
-            sender_name: The <from/> value (mandatory)
-
-        Returns:
-            Payload XML string (no envelope) if responding, else None.
-
-        The organism guarantees:
-            - envelope_tree is valid against envelope.xsd
-            - <from/> is present and matches sender_name
-            - convo_id is a valid UUID
-
-        To reply in the current thread: omit convo_id in response → bus preserves it
-        To start a new thread: include <env:convo_id>new-uuid</env:convo_id> in returned envelope
+        React to a pre-validated dictionary payload.
+        Returns raw response XML bytes.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} must implement handle()"
-        )
+        # 1. Execute the handler logic
+        # Note: In v1.3, the Bus/Lark handles the XML -> Dict conversion
+        return await self.handler(payload_dict)
 
-    # ===================================================================
-    # Optional convenience helpers (can be overridden)
-    # ===================================================================
+    def generate_xsd(self) -> str:
+        """
+        Autonomous XSD Synthesis.
+        Inspects the payload_class and generates an XSD string.
+        """
+        # Logic to iterate over self.payload_class.model_fields
+        # and build the <xs:element> definitions.
+        pass
 
-    def make_response(
+    def generate_prompt_fragment(self) -> str:
+        """
+        Prompt Synthesis (The 'Mente').
+        Generates the tool usage instructions for other agents.
+        """
+        fragment = [
+            f"Capability: {self.agent_name}",
+            f"Root Tag: <{self.root_tag}>",
+            f"Description: {self.description}",
+            "\nParameters:"
+        ]
+
+        for name, field in self.payload_class.model_fields.items():
+            field_type = field.annotation.__name__
+            field_desc = field.description or "No description"
+            fragment.append(f"  - {name} ({field_type}): {field_desc}")
+
+        return "\n".join(fragment)
+
+    def make_response_envelope(
         self,
-        payload: str | etree._Element,
-        *,
-        to: Optional[str] = None,
-        convo_id: Optional[str] = None,
-    ) -> str:
+        payload_bytes: bytes,
+        thread_id: str,
+        to: Optional[str] = None
+    ) -> bytes:
         """
-        Helper for building correct response payloads.
-        Use this in subclasses to avoid envelope boilerplate.
-
-        - If convo_id is None → reply in current thread
-        - If convo_id provided → force/start new thread
-        - to overrides default reply-to-sender
+        Wraps response bytes in a standard envelope.
         """
-        # Implementation tomorrow — but declared here for contract clarity
-        raise NotImplementedError
+        # Logic to build the <message> meta block and append the payload_bytes
+        pass

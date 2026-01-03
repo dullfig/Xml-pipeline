@@ -5,8 +5,8 @@ The AgentServer message pump is a single, linear, attack-resistant pipeline. Eve
 ```mermaid
 flowchart TD
     A[WebSocket Ingress<br>] --> B[TOTP + Auth Check]
-    B --> C[Repair + Exclusive C14N]
-    C --> D["Lark Envelope Grammar<br>(noise-tolerant, NOISE*)"]
+    B --> C[lxml Repair + Exclusive C14N]
+    C --> D["Envelope Grammar<br>"]
     D --> E[Extract Payload XML fragment]
     E --> F{Payload namespace?}
     
@@ -24,22 +24,15 @@ flowchart TD
 
 ## Detailed Stages
 
-1. **Ingress (raw bytes over WSS)**  
-   Single port, TLS-terminated.
+1. **Ingress:** Raw bytes over WSS.
 
-2. **Authentication**  
-   TOTP-based session scoping. Determines privilege level (admin vs regular agent).
+2. **The Immune System:** Every inbound packet is converted to a Tree.
 
-3. **Repair + Exclusive Canonicalization**  
-   Normalizes XML (entity resolution disabled, huge_tree=False, no_network=True). Tamper-evident baseline.
+3. **Internal Routing:** Trees flow between organs via the `dispatch` method.
 
-4. **Envelope Validation**  
-   Fixed, shared Lark grammar for the envelope (with `NOISE*` token).  
-   Seeks first valid `<envelope>...</envelope>` in noisy LLM output.  
-   Consumes exactly one envelope per pass (handles conjoined messages cleanly).
+4. **The Thought Stream (Egress):** Listeners return raw bytes. These are wrapped in a `<dummy/>` tag and run through a recovery parser.
 
-5. **Payload Extraction**  
-   Clean payload XML fragment (bytes) + declared namespace/root.
+5. **Multi-Message Extraction:** Every `<message/>` found in the dummy tag is extracted as a Tree and re-injected into the Bus.
 
 6. **Routing Decision**
    - `https://xml-platform.org/meta/v1` → **Core Meta Handler** (privileged, internal).  
@@ -66,7 +59,7 @@ flowchart TD
 
 ## Safety Properties
 
-- **No entity expansion** anywhere (Lark ignores entities, lxml parsers hardened).
+- **No entity expansion** anywhere (lxml parsers hardened).
 - **Bounded depth/recursion** by schema design + size limits.
 - **No XML trees escape the pump** — only clean dicts reach handlers.
 - **Topology privacy** — normal flows reveal no upstream schemas unless meta privilege granted.
