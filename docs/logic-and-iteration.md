@@ -1,72 +1,77 @@
-# Executive Summary: Self-Calling Iteration Framework in xml-pipeline
+# Reasoning & Iteration in AgentServer v2.0
+**January 03, 2026**
 
-**Date**: December 29, 2025  
-**Component**: Core reasoning mechanism for LLM personalities
+LLM-based listeners (agents) achieve multi-step reasoning, planning, tool use, and iteration through **open, auditable self-calls and subthreading** — not hidden loops or state machines.
 
-### Principle
+## Core Mechanism
 
-In xml-pipeline, **multi-step reasoning, planning, tool use, and iteration are implemented through open, auditable self-calls** — not hidden loops or state machines.
+1. **Thread = Memory**  
+   Full conversation history (all messages in the thread, including thoughts/tools/system) is the only memory.  
+   Each LLM call receives the complete thread context (system prompt + prior messages).
 
-The LLM personality participates in the conversation exactly like any other listener: it can send messages to its own root tag.
-
-### How It Works
-
-1. **Conversation thread = memory**  
-   Every message (user, personality, tool) is appended to history keyed by `convo_id`.
-
-2. **Self-reflection = self-message**  
-   To think step-by-step, the LLM emits its own root tag with the same `convo_id`:
+2. **Self-Reflection = Self-Message**  
+   To think step-by-step or continue reasoning, the agent emits its own root tag in the same thread:
    ```xml
-   <ask-grok convo_id="123">
-     First, let's outline the steps...
-   </ask-grok>
+   <researcher xmlns="https://xml-pipeline.org/ns/researcher/v1">
+     <thought>Outlining steps...</thought>
+     <!-- more thoughts or tool calls -->
+   </researcher>
    ```
+   Pump routes it back → appended to history → next LLM call sees it.
 
-3. **MessageBus routes it back** to the same personality instance.
+3. **Iteration Emerges Naturally**  
+   Repeated self-calls continue until the agent emits a final response (e.g., structured answer to human).
 
-4. **Personality appends its own message** to history and calls the LLM again.
+4. **Subthreading for Parallel/Branched Computation**  
+   See [Thread Management](thread-management.md) for details.  
+   Agents spawn branches explicitly:
+   ```xml
+   <spawn-thread suggested_sub_id="image-analysis">
+     <initial-payload>
+       <analyze-image>...</analyze-image>
+     </initial-payload>
+   </spawn-thread>
+   ```
+   Core confirms with assigned ID → parallel queue drains independently.
 
-5. **LLM sees full context** — including its previous thoughts — and continues.
+## System Messages (Core-Generated Feedback)
 
-6. **Iteration emerges naturally** from repeated self-calls until final response.
+The organism injects visible system payloads for primitives and errors — ensuring no silent failure and aiding LLM recovery:
 
-### Key Properties
+- Spawn confirmation:
+  ```xml
+  <thread-spawned assigned_id="sess-abcd1234.research" parent_id="sess-abcd1234"/>
+  ```
 
-- **No hidden state** — the thread history is the only memory
-- **No special controller** — MessageBus and `convo_id` do all coordination
-- **Fully auditable** — every thought, plan, and intermediate step is a logged message
-- **Tool use fits identically** — tool calls are messages to other root tags
-- **Termination is natural** — LLM decides when to emit final response tag (e.g., `<grok-response>`)
+- Unknown thread error:
+  ```xml
+  <system-thread-error unknown_id="bad" code="unknown_thread"
+    message="Unknown thread; emit <spawn-thread/> to create."/>
+  ```
 
-### Structured Planning Support
+- Context management confirmation (agent-requested):
+  ```xml
+  <context-cleared kept_messages="10"/>
+  ```
 
-Personalities are encouraged to use visible structures:
+- Future primitives (timer, etc.) follow the same pattern — always visible, immediate response.
 
+## Structured Planning Support
+
+Agents are encouraged to use visible structures for coordination:
 ```xml
-<todo-until condition="all primes under 100 listed">
-  <step done="true">List 2</step>
-  <step done="true">List 3</step>
-  <step done="false">List 5</step>
+<todo-until condition="all sources checked">
+  <step done="true">Search web</step>
+  <step done="false">Analyze results</step>
 </todo-until>
 ```
+Enables self-reading, GUI rendering, explicit termination.
 
-This enables:
-- Self-coordination (LLM reads its own plan)
-- GUI progress rendering
-- Explicit termination conditions
+## Key Properties
 
-### Owner Control
+- **No Hidden State**: Thread history is the sole memory.
+- **Fully Auditable**: Every thought, plan, spawn, system feedback, and step is a logged message.
+- **Tool Use Identical**: Calls to other listeners are normal payloads.
+- **Termination Natural**: Agent decides final output tag.
 
-- `iteration-capacity` config (`high`/`medium`/`low`/`none`) tunes how strongly the personality is prompted to iterate
-- All behavior governed by owner-provided prompts and response templates
-- No personality can loop indefinitely without owner consent
-
-### Result
-
-The framework turns **conversation into computation**.
-
-Loops, conditionals, and planning become **visible message patterns** rather than hidden code.
-
-The organism reasons by talking to itself in the open — producing a complete, transparent trace of thought at every step.
-
-This is the core iteration mechanism for all LLM personalities in xml-pipeline.
+The framework turns conversation into visible, branched computation — safe, transparent, and Turing-complete within bounds.

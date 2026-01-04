@@ -1,18 +1,16 @@
-# Autonomous Registration & Introspection (v1.3 Preview)
-
-In AgentServer v1.3, manual XSDs, grammars, and LLM tool descriptions are obsolete. Listeners **autonomously generate** their own validation rules and usage prompts at registration time. Introspection (emit-schema/example/prompt) is a privileged core facility — query the organism, not individual listeners.
+# Autonomous Registration & Introspection (v2.0)
+In AgentServer v2.0, tool definition is radically simple: one `@xmlify` dataclass + handler + description. **No manual XSDs, no fragile JSON item mappings, no custom prompt engineering.** The organism auto-generates everything needed for validation, routing, and LLM wiring.<br/>
+Manual XSDs, grammars, and tool descriptions are obsolete. Listeners **autonomously generate** their contracts and metadata at registration time. Introspection is a privileged core facility.
 
 ## The Developer Experience
 
-Declare your input contract as a Python dataclass + a pure handler function. One line to register.
+Declare your payload contract as an `@xmlify` dataclass + a pure handler function that returns raw bytes. Register with a name and description. That's it.
 
 ```python
 from xmlable import xmlify
 from dataclasses import dataclass
-from typing import Dict, Any
-from xml_pipeline import Listener  # the xmlListener base
+from xml_pipeline import Listener, bus  # bus is the global MessageBus
 
-# 1. Define the payload "DNA" (@xmlify auto-generates XSD)
 @xmlify
 @dataclass
 class AddPayload:
@@ -20,90 +18,84 @@ class AddPayload:
     a: int = 0  # First operand
     b: int = 0  # Second operand
 
-# 2. Pure handler: dict[str, Any] -> bytes (response XML fragment)
-def add_handler(payload: Dict[str, Any]) -> bytes:
-    result = payload["a"] + payload["b"]
+def add_handler(payload: AddPayload) -> bytes:
+    result = payload.a + payload.b
     return f"<result>{result}</result>".encode("utf-8")
 
-# 3. Register — autonomous chain reaction begins
-add_listener = Listener(
+# LLM example: multi-payload emission tolerated
+def agent_handler(payload: AgentPayload) -> bytes:
+    return b"""
+    <thought>Analyzing...</thought>
+    <tool-call xmlns="https://xml-pipeline.org/ns/search/v1">
+      <query>weather</query>
+    </tool-call>
+    """.strip()
+
+Listener(
     payload_class=AddPayload,
     handler=add_handler,
-    name="calculator.add"  # For discovery/logging
-)
-bus.register(add_listener)  # <- Boom: XSD, Lark grammar, prompt auto-generated
+    name="calculator.add",
+    description="Adds two integers and returns their sum."  # Mandatory for usable tool prompts
+).register()  # ← XSD, example, prompt auto-generated + registered
 ```
 
-That's it. No XML, no manual schemas. The organism handles the rest.
+The bus validates input against the XSD, deserializes to the dataclass instance, calls the handler, wraps output bytes in `<dummy></dummy>`, and extracts multiple payloads if emitted.
 
-## Autonomous Chain Reaction on `bus.register()`
-
-When registered, `Listener` (xmlListener base) triggers:
+## Autonomous Chain Reaction on Registration
 
 1. **XSD Synthesis**  
-   Inspects `@xmlify` dataclass → generates `schemas/calculator.add/v1.xsd` (cached). Namespace derived from module/path (e.g., `https://xml-platform.org/calculator/v1`), root=`add`.
+   From `@xmlify` payload_class → generates/caches `schemas/calculator.add/v1.xsd`.  
+   Namespace: `https://xml-pipeline.org/ns/calculator/v1` (derived or explicit). Root = lowercase class name.
 
-2. **Lark Grammar Transcription**  
-   XSD → EBNF grammar string (your dynamic generator). Stored in `listener.grammar` (Lark parser + tree-to-dict transformer). Noise-tolerant: `NOISE* add NOISE*`.
-
-3. **Prompt Synthesis (The "Mente")**  
-   From dataclass fields/XSD:  
+2. **Example & Prompt Synthesis**  
+   From dataclass fields + description:  
    ```
-   Capability: calculator.add
-   Namespace: https://xml-platform.org/calculator/v1
-   Root: <add>
+   Tool: calculator.add
+   Description: Adds two integers and returns their sum.
 
-   Example:
+   Example Input:
    <add>
      <a>40</a>
      <b>2</b>
    </add>
 
-   Params: a(int), b(int). Returns: <result>42</result>
-   ```  
-   Auto-injected into wired agents' system prompts via YAML.
+   Params: a(int) - First operand, b(int) - Second operand
+   Returns: Raw XML fragment (e.g., <result>)
+   ```
+   Auto-injected into wired agents' system prompts.
 
-4. **Registry Update**  
-   Bus catalogs by `name` and `namespace#root`. Ready for routing + meta queries.
+3. **Registry Update**  
+   Bus catalogs by `name` and `(namespace, root)`. Ready for routing + meta queries.
 
 ## Introspection: Privileged Meta Facility
 
-Listeners don't "self-register" emit endpoints (no recursion/leakage). Query the **core MessageBus** via reserved `https://xml-platform.org/meta/v1`:
+Query the core MessageBus via reserved `https://xml-pipeline.org/ns/meta/v1`:
 
 ```xml
-<envelope ...>
-  <payload xmlns="https://xml-platform.org/meta/v1">
+<message ...>
+  <payload xmlns="https://xml-pipeline.org/ns/meta/v1">
     <request-schema>
-      <capability>calculator.add</capability>  <!-- name or namespace#root -->
+      <capability>calculator.add</capability>
     </request-schema>
   </payload>
-</envelope>
+</message>
 ```
 
-Bus internal handler:
-- Looks up live `Listener` in registry.
-- Returns XSD bytes, example XML, or prompt.
-- **Privileged**: Admin-only by default (YAML `meta.allow_schema_requests: "admin"`). No upstream topology leaks (A→B→C hides A's full schema).
+Core handler returns XSD bytes, example XML, or prompt fragment.  
+Controlled per YAML (`meta.allow_schema_requests: "admin"` etc.). No topology leaks.
 
-Other meta ops: `request-example`, `request-prompt`, `list-capabilities`.
+Other ops: `request-example`, `request-prompt`, `list-capabilities`.
 
-## Multi-Handler "Organs"
+## Multi-Handler Organs
 
-One logical service, many functions? Register multiples:
-
-```python
-subtract_listener = Listener(payload_class=SubtractPayload, handler=subtract_handler, name="calculator.subtract")
-bus.register(subtract_listener)  # Independent XSD/grammar/prompt
-```
-
-Shared state? Subclass `Listener` escape hatch, pass `handler=self.dispatch`.
+Need multiple functions in one service? Register separate listeners or subclass Listener for shared state.
 
 ## Key Advantages
 
-- **Zero Drift**: Edit dataclass → rerun → XSD/grammar/prompts regenerate.
-- **Attack-Resistant**: Lark validates in one noise-tolerant pass → dict → handler.
-- **Sovereign Wiring**: YAML agents get live prompts at startup. Downstream sees only wired peers.
-- **Federated**: Remote nodes expose same meta namespace (if `meta.allow_remote: true`).
+- **Zero Drift**: Edit dataclass → restart/hot-reload → XSD/example/prompt regenerate.
+- **Attack-Resistant**: lxml XSD validation → typed instance → handler.
+- **LLM-Tolerant**: Raw bytes output → dummy extraction supports multi-payload and dirty streams.
+- **Sovereign Wiring**: YAML agents get live prompt fragments at startup.
+- **Discoverable**: Namespaces served live at https://xml-pipeline.org/ns/... for tools and federation.
 
-*The tool explains itself to the world. The world obeys the tool.*
-
+*The tool declares its contract and purpose. The organism enforces and describes it exactly.*

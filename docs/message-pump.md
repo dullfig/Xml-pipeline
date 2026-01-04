@@ -1,70 +1,59 @@
-# Message Pump — End-to-End Flow
+# Message Pump — End-to-End Flow (v2.0)
 
-The AgentServer message pump is a single, linear, attack-resistant pipeline. Every message — local or remote, request or response — follows exactly the same path.
+The AgentServer message pump processes individual messages through a single, linear, attack-resistant pipeline. The outer dispatcher runs a continuous async loop, draining per-thread message buffers (queues) until empty — enabling persistent, branched reasoning without artificial limits.
 
 ```mermaid
 flowchart TD
-    A[WebSocket Ingress<br>] --> B[TOTP + Auth Check]
-    B --> C[lxml Repair + Exclusive C14N]
-    C --> D["Envelope Grammar<br>"]
-    D --> E[Extract Payload XML fragment]
-    E --> F{Payload namespace?}
-    
-    F -->|meta/v1| G["Core Meta Handler<br>(privileged, direct registry lookup)"]
-    F -->|user namespace| H[Route by namespace + root]
-    H --> I["Listener-specific Lark Grammar<br>(auto-generated from @xmlify class)"]
-    I --> J[Parse → clean dict]
-    J --> K["Call handler(payload_dict: dict) → bytes"]
-    K --> L[Wrap response payload in envelope]
-    
-    G --> L
-    L --> M[Exclusive C14N + Sign]
-    M --> N["WebSocket Egress<br>(bytes)"]
+    A["WebSocket Ingress\n(enqueue to thread buffer)"] --> B["Dispatcher Loop:\nSelect next message\n(per thread_scheduling strategy)"]
+    B --> C["Repair + Exclusive C14N"]
+    C --> D["Envelope Validation (lxml)"]
+    D --> E["Extract Payload Tree"]
+    E --> F{"Payload Namespace?"}
+    F -->|meta/v1| G["Core Meta Handler\n(introspection & reserved primitives)"]
+    F -->|capability| H["Route by (namespace, root)"]
+    H --> I["Validate Payload vs Listener XSD (lxml)"]
+    I --> J["Deserialize to Dataclass Instance (xmlable)"]
+    J --> K["Call handler(instance) → raw bytes"]
+    K --> L["Wrap bytes in <dummy></dummy>"]
+    L --> M["Repair/Parse → Extract all top-level payloads"]
+    M --> N["Wrap each payload in separate envelope\n(enqueue to target thread buffers)"]
+    G --> N
+    N --> O["Exclusive C14N + Sign"]
+    O --> P["WebSocket Egress\n(sequential per connection)"]
+    P --> B["Continue dispatcher loop if buffers non-empty"]
 ```
 
-## Detailed Stages
+## Detailed Stages (Per-Message)
 
-1. **Ingress:** Raw bytes over WSS.
+1. **Ingress/Enqueue**: Raw bytes → repair → preliminary tree → enqueue to target thread buffer.
 
-2. **The Immune System:** Every inbound packet is converted to a Tree.
+2. **Dispatcher Loop**: Single async non-blocking loop selects next message from per-thread queues (breadth-first default for fairness).
 
-3. **Internal Routing:** Trees flow between organs via the `dispatch` method.
+3. **Processing**:
+   - Full repair + C14N.
+   - Envelope validation.
+   - Routing decision:
+     - **Meta Branch** (`https://xml-pipeline.org/ns/meta/v1` namespace): Handled directly by privileged core handler (no listener lookup or XSD validation needed).
+       - Purpose: Introspection and reserved organism primitives.
+       - Examples:
+         - `request-schema`, `request-example`, `request-prompt`, `list-capabilities` (returns XSD bytes, example XML, prompt fragment, or capability list).
+         - Thread primitives like `spawn-thread`, `clear-context`.
+       - Privileged: Controlled via YAML `meta` flags (e.g., `allow_schema_requests: "admin"` or "none"). Remote queries optional.
+       - Why separate: Faster, safer (no user listener involved), topology privacy preserved.
+     - Capability namespace → normal listener route (XSD validation + deserialization).
 
-4. **The Thought Stream (Egress):** Listeners return raw bytes. These are wrapped in a `<dummy/>` tag and run through a recovery parser.
+   - Typed handler call → raw bytes.
 
-5. **Multi-Message Extraction:** Every `<message/>` found in the dummy tag is extracted as a Tree and re-injected into the Bus.
+4. **Response Handling**:
+   - Dummy wrap → extract multi-payloads.
+   - Each enqueued as new message(s) in appropriate thread buffer(s).
 
-6. **Routing Decision**
-   - `https://xml-platform.org/meta/v1` → **Core Meta Handler** (privileged, internal).  
-     No user listener involved. Direct registry lookup for `request-schema`, `request-example`, `request-prompt`, `list-capabilities`.
-   - Any other namespace → **User Listener** lookup by `(namespace, root_element)`.
+5. **Egress**: Dequeue → C14N/sign → send.
 
-7. **Payload Validation & Conversion**  
-   Listener-specific Lark grammar (auto-generated from `@xmlify` payload_class at registration).  
-   One-pass, noise-tolerant parse → Transformer → guaranteed clean `dict[str, Any]`.
+## Key Properties
+- Continuous looping until all thread buffers empty — natural iteration/subthreading without one-shot constraints.
+- Multi-payload enqueues enable parallel branches/thoughts.
+- Scheduling balances deep dives vs fair exploration.
+- Attack-resistant at every step.
 
-8. **Handler Execution**  
-   Pure callable: `handler(payload_dict) -> bytes`  
-   Returns raw response payload XML fragment.  
-   Synchronous by default (async supported).
-
-9. **Response Envelope**  
-   Bus wraps handler bytes in standard response envelope.
-
-10. **Egress Canonicalization**  
-    Same exclusive C14N + optional signing.
-
-11. **WebSocket Out**  
-    Bytes to peer.
-
-## Safety Properties
-
-- **No entity expansion** anywhere (lxml parsers hardened).
-- **Bounded depth/recursion** by schema design + size limits.
-- **No XML trees escape the pump** — only clean dicts reach handlers.
-- **Topology privacy** — normal flows reveal no upstream schemas unless meta privilege granted.
-- **Zero tool-call convention** — the payload *is* the structured invocation.
-
-The pump is deliberately simple: one path, no branches except the privileged meta shortcut. Everything else is data-driven by live, auto-generated grammars.
-
-XML in → XML out. Safely. Permanently.
+XML in → queued → processed → multi-out → re-queued. Loops forever if needed. Safely. Permanently.

@@ -16,7 +16,8 @@ See [Core Architectural Principles](docs/core-principles-v2.0.md) for the single
 - **Computational Sovereignty:** Turing-complete via self-calls, subthreading primitives, and visible reasoning — all bounded by thread hierarchy and local-only control.
 
 ## Developer Experience — Create a Listener in 12 Lines
-That's it. No manual XML, no schemas, no prompts.
+**No manual schemas. No brittle JSON conventions. No hand-written prompts.**  
+Just declare a dataclass contract and a one-line human description. The organism handles validation, XSD, examples, and tool prompts automatically.
 
 ```python
 from xmlable import xmlify
@@ -41,7 +42,8 @@ Listener(
 ).register()  # ← Boom: XSD, example, prompt auto-generated + registered
 ```
 
-The organism now speaks `<add>` — fully validated, typed, and discoverable.
+The organism now speaks `<add>` — fully validated, typed, and discoverable.<br/>
+Unlike rigid platforms requiring custom mappings or fragile item structures, this is pure Python — typed, testable, and sovereign.
 
 ## Key Features
 ### 1. The Autonomous Schema Layer

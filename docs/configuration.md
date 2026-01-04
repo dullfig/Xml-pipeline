@@ -50,7 +50,12 @@ agents:
       - summarizer
       - name: web_search
         remote: true
-
+        gateways: 
+          - search_node1
+          - search_node2 
+          - search_node3  # list = broadcast to all
+        mode: "first-answer-wins"  # optional: "all" (collect responses), default "single" if one gateway
+        
 gateways:
   - name: web_search
     remote_url: "wss://trusted-search-node.example.org"
