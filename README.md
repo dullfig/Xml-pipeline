@@ -4,6 +4,16 @@
 **January 03, 2026**  
 **Architecture: Autonomous Schema-Driven, Turing-Complete Multi-Agent Organism**
 
+## The Rant
+**Why XML?**  
+[Why not JSON?](docs/why-not-json.md)
+
+XML is the sovereign wire format — standards-based, self-describing, attack-resistant, and evolvable without drift. JSON was a quick hack that escaped into the wild and became the default for everything, including AI tool calling, where its brittleness causes endless prompt surgery and validation headaches.
+
+This project chooses XML deliberately. The organism enforces contracts exactly (XSD validation, no transcription bugs), tolerates dirty streams (repair + dummy extraction), and keeps reasoning visible. No fragile conventions. No escaping hell. Just bounded, auditable computation.
+
+Read the full rant [here](docs/why-not-json.md) for the history, pitfalls, and why XML wins permanently.
+
 ## What It Is
 AgentServer is a production-ready substrate for the `xml-pipeline` nervous system. Version 2.0 stabilizes the design around exact XSD validation, typed dataclass handlers, mandatory hierarchical threading, and strict out-of-band privileged control.
 
