@@ -4,25 +4,56 @@ The AgentServer message pump processes individual messages through a single, lin
 
 ```mermaid
 flowchart TD
-    A["WebSocket Ingress\n(enqueue to thread buffer)"] --> B["Dispatcher Loop:\nSelect next message\n(per thread_scheduling strategy)"]
-    B --> C["Repair + Exclusive C14N"]
-    C --> D["Envelope Validation (lxml)"]
-    D --> E["Extract Payload Tree"]
-    E --> F{"Payload Namespace?"}
-    F -->|meta/v1| G["Core Meta Handler\n(introspection & reserved primitives)"]
-    F -->|capability| H["Route by (namespace, root)"]
-    H --> I["Validate Payload vs Listener XSD (lxml)"]
-    I --> J["Deserialize to Dataclass Instance (xmlable)"]
-    J --> K["Call handler(instance) → raw bytes"]
-    K --> L["Wrap bytes in <dummy></dummy>"]
-    L --> M["Repair/Parse → Extract all top-level payloads"]
-    M --> N["Wrap each payload in separate envelope\n(enqueue to target thread buffers)"]
-    G --> N
-    N --> O["Exclusive C14N + Sign"]
-    O --> P["WebSocket Egress\n(sequential per connection)"]
-    P --> B["Continue dispatcher loop if buffers non-empty"]
+    subgraph MessagePump
+    subgraph Init
+    start([Start])
+    raw[/Optional<br>Raw Bytes/]
+    wrapstart["Wrap<br>&ltstart&gt{...}&lt/start&gt"]
+    end
+    enq1([QUEUE 1])
+    rawwaiting{Raw<br>Msg<br>Waiting?}
+    waitRaw([Wait])
+    subgraph Process
+    extract["Extract<br>Tree"]
+    split["Split<br>Tree"]
+    subgraph foreach [For Each Message]
+        getmsg[Get Msg]
+        badTo{&ltTo&gt Missing?}
+        endnoto([Discard])
+        addfrom["Add .from"]
+        repair[Repair + C14N]
+        validate[Validate]
+        invalidMsg{Bad<br>Message?}
+        badmsg([Discard])
+        more{More?}
+    end
+    enqueue([QUEUE 2])
+    xmlWaiting{XML<br>Waiting?}
+    waitXml([Wait])
+    subgraph Async
+    lookup[Lookup Listener] 
+    route[Route]
+    wait[await Response]
+    wrap["Wrap<br>&ltfrom&gt{...}&lt/from&gt"]
+    end
+    end
+    end
+    
+    start --> raw --> wrapstart --> enq1 --> rawwaiting 
+    rawwaiting --> |NO| waitRaw
+    rawwaiting ---> |YES| extract
+    extract --> split --> foreach
+    getmsg --> badTo
+    badTo --> |YES| endnoto
+    badTo --> |NO| addfrom --> repair --> validate --> invalidMsg
+    invalidMsg ---> |NO| more --> |Yes| getmsg
+    invalidMsg --> |YES| badmsg
+    more --> |NO| enqueue
+    enqueue --> xmlWaiting
+    xmlWaiting --> |NO| waitXml
+    xmlWaiting ---> |YES| lookup --> route --> wait --> wrap --> enq1
+    
 ```
-
 ## Detailed Stages (Per-Message)
 
 1. **Ingress/Enqueue**: Raw bytes → repair → preliminary tree → enqueue to target thread buffer.

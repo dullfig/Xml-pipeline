@@ -11,6 +11,16 @@ These principles are the single canonical source of truth for the project. All d
 - Exclusive C14N on ingress and egress.
 - Malformed XML repaired on ingress; repairs logged in `<huh/>` metadata.
 
+## Identity Injection & Handler Purity
+- Handlers are pure, stateless functions with no knowledge of routing, thread context, or their own registered name.
+- On ingress (external or gateway messages): <from> is provided and authenticated by the client/gateway (enforced by envelope validation).
+- On response generation (after handler execution and multi-payload extraction):
+  - The dispatcher injects <from> using the executing listener's registered name (e.g., "calculator.add" or "researcher").
+  - For meta/primitive responses: <from> is injected as "core".
+- <thread> is inherited from the incoming message (or assigned/updated for primitives like spawn-thread).
+- <to> remains optional and rarely used.
+- This ensures every enveloped message has a trustworthy, auditable <from> without handler involvement, preventing spoofing and keeping capability code minimal/testable.
+
 ## Configuration & Composition
 - YAML file (`organism.yaml`) is the bootstrap source of truth, loaded at startup.
 - Defines initial listeners, agents, gateways, meta privileges, and OOB channel configuration.
@@ -46,6 +56,7 @@ These principles are the single canonical source of truth for the project. All d
 - Subthreading natively supported via hierarchical thread IDs and primitives (e.g., reserved payload to spawn "parent.sub1").
 - Optional structured constructs like `<todo-until/>` for visible planning.
 - No hidden loops or state machines; all reasoning steps are visible messages.
+- Thread management follows the dynamic call tracing model (see thread-management.md). Paths are built by appending target listener names on emission, with automatic popping on responses. Agents remain oblivious, enabling natural delegation and parallelism.
 
 ## Security & Sovereignty
 - Privileged messages (per `privileged-msg.xsd`) handled exclusively on dedicated OOB channel.
@@ -72,5 +83,10 @@ These principles are the single canonical source of truth for the project. All d
 - Internal: lxml trees → XSD validation → xmlable deserialization → dataclass → handler → bytes → dummy extraction.
 - Single process, async non-blocking.
 - XML is the sovereign wire format; everything else is implementation detail.
+
+## Scheduled Computation
+- Timers and delays implemented as normal listeners using async sleeps.
+- Caller idles naturally; wakeup messages bubble back via standard tracing.
+- Enables recurrent tasks (e.g., periodic monitoring) without blocking or external schedulers.
 
 These principles are now locked. All existing docs will be updated to match this file exactly. Future changes require explicit discussion and amendment here first.
