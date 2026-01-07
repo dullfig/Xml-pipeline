@@ -47,8 +47,7 @@ flowchart TD
     subgraph MessagePump
     subgraph Init
     start([Start])
-    raw[/Optional<br>Raw Bytes/]
-    wrapstart["Wrap<br>&ltstart&gt{...}&lt/start&gt"]
+    wrapstart["Boot Msg<br>&ltmessage&gt{...}&lt/message&gt"]
     end
     enq1([QUEUE 1])
     rawwaiting{Raw<br>Msg<br>Waiting?}
@@ -79,7 +78,7 @@ flowchart TD
     end
     end
     
-    start --> raw --> wrapstart --> enq1 --> rawwaiting 
+    start --> wrapstart --> enq1 --> rawwaiting 
     rawwaiting --> |NO| waitRaw
     rawwaiting ---> |YES| extract
     extract --> split --> foreach
@@ -96,6 +95,16 @@ flowchart TD
 ```
 ## Detailed Stages (Per-Message)
 
+### Boot Message
+   - Since all agents are listeners, there would be no way for a client to initiate a message pump.
+   - The boot message is a dummy message that is enqueued to the root thread buffer. Any listener may chose to register a root tag for it.
+   - The root thread buffer is the only one that is drained by the dispatcher loop.
+   - if a listener (like a human agent) is registered for the boot message, it will receive the boot message and then async await for keyboard input.
+### Queue 1
+   - The first buffer holds raw unprocessed messages from the network.
+### Queue 2
+   - The second buffer holds messages that have been processed and are ready to be sent back to the network.
+   - 
 1. **Ingress/Enqueue**: Raw bytes → repair → preliminary tree → enqueue to target thread buffer.
 
 2. **Dispatcher Loop**: Single async non-blocking loop selects next message from per-thread queues (breadth-first default for fairness).
