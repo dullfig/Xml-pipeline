@@ -17,8 +17,8 @@ These principles are the single canonical source of truth for the project. All d
 - On response generation (after handler execution and multi-payload extraction):
   - The dispatcher injects <from> using the executing listener's registered name (e.g., "calculator.add" or "researcher").
   - For meta/primitive responses: <from> is injected as "core".
-- <thread> is inherited from the incoming message (or assigned/updated for primitives like spawn-thread).
-- <to> remains optional and rarely used.
+- &ltthread&gt is inherited from the incoming message (or assigned/updated for primitives like spawn-thread).
+- &ltto&gt remains optional and rarely used.
 - This ensures every enveloped message has a trustworthy, auditable <from> without handler involvement, preventing spoofing and keeping capability code minimal/testable.
 
 ## Configuration & Composition
@@ -49,6 +49,8 @@ These principles are the single canonical source of truth for the project. All d
   - Each extracted payload wrapped in separate response envelope (inherits thread/from, optional new subthread if primitive used)
   - Enveloped responses buffered and sent sequentially
 - Supports single clean response, multi-payload emission (parallel tools/thoughts), and dirty LLM output tolerance.
+- Message pump tracks token budgets per agent and thread, enforcing token limits and preventing abuse. The LLM abstraction layer informs the message bus on the actual token usage.
+- Message pump uses asynchronous non-blocking I/O for maximum throughput.
 
 ## Reasoning & Iteration
 - LLM agents iterate via open self-calls (same root tag, same thread ID).
@@ -94,5 +96,8 @@ These principles are the single canonical source of truth for the project. All d
 - Stateful capabilities (e.g., calculator memory, game state) store data per thread path UUID.
 - Ensures isolation across conversations, automatic cleanup on idle, and minimal mutable state.
 - Handler closes over or receives UUID for access — still oblivious to readable path.
+
+## Resource Stewardship 
+- The Message Pump ensures fair execution and prevents "Paperclip" runaway scenarios via internal Thread-Level Scheduling. Every thread is subject to Token-Rate Monitoring and Fair-Share Queuing, ensuring that a high-volume agent (like a deep-thinking LLM) cannot block high-priority system events or starve simpler organs (like tools).
 
 These principles are now locked. All existing docs will be updated to match this file exactly. Future changes require explicit discussion and amendment here first.
