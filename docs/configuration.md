@@ -1,4 +1,4 @@
-G# Configuration — organism.yaml (v2.0)
+G# Configuration — organism.yaml (v2.1)
 
 The entire organism is declared in a single YAML file (default: `config/organism.yaml`).  
 Loaded at bootstrap — single source of truth for initial composition.  
