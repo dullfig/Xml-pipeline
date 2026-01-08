@@ -2,6 +2,18 @@ from dataclasses import dataclass, field
 from lxml.etree import Element
 from typing import Any
 
+"""
+default_listener_steps = [
+    repair_step,                  # raw bytes → repaired bytes
+    c14n_step,                    # bytes → lxml Element
+    envelope_validation_step,     # Element → validated Element
+    payload_extraction_step,      # Element → payload Element
+    xsd_validation_step,          # payload Element + cached XSD → validated
+    deserialization_step,         # payload Element → dataclass instance
+    routing_resolution_step,      # attaches target_listeners (or error)
+]
+"""
+
 @dataclass
 class HandlerMetadata:
     """Trustworthy context passed to every handler."""

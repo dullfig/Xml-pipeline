@@ -72,6 +72,40 @@ These principles are the single canonical source of truth for the project. All d
 - Opaque thread UUIDs + private path registry prevent topology disclosure.
 - “No Paperclippers” manifesto injected as first system message for every LLM-based listener.
 
+### Privileged Operations
+- Privileged messages (per `privileged-msg.xsd`) handled exclusively on dedicated OOB channel.
+- OOB channel bound to localhost by default (safe for local GUI); separate port/socket from main bus.
+- Main message pump and dispatcher oblivious to privileged operations – no routing or handling for privileged roots.
+- Remote privileged attempts impossible (channel not exposed); any leak to main port logged as security event and dropped.
+
+### Identity & Cryptography
+- Ed25519 identity key used for envelope signing, federation auth, and privileged command verification.
+- All traffic on main bus uses mandatory WSS (TLS) + TOTP authentication.
+
+### Handler Isolation (NEW)
+- **Handlers are untrusted code** running in coroutine sandboxes with minimal context.
+- Security-critical metadata (sender identity, thread path, routing) captured in coroutine scope before handler execution.
+- Handler output never trusted for identity, routing, or thread context – all envelope metadata injected from coroutine-captured state.
+- Even compromised handlers cannot forge messages, escape threads, or discover topology beyond declared peers.
+
+### Topology Privacy
+- Opaque thread UUIDs prevent topology disclosure to handlers and agents.
+- Private path registry maps UUIDs to hierarchical paths (e.g., `agent.tool.subtool`) for routing and audit.
+- Agents receive only opaque UUIDs; system maintains authoritative path mapping.
+- Peers list enforces capability boundaries: agents can only call declared tools.
+
+### Anti-Paperclip Guarantees
+- No persistent cross-thread memory (threads are ephemeral audit trails).
+- Token budgets per thread enforce computational bounds.
+- Thread pruning on delegation return prevents state accumulation.
+- All agent reasoning visible in message history (no hidden state machines).
+- "No Paperclippers" manifesto injected as first system message for every LLM-based listener.
+
+### Audit & Forensics
+- Complete message history per thread provides full audit trail.
+- Privileged introspection (via OOB) can map UUID→path for forensics without exposing to agents.
+- All structural changes (hot-reload, listener registration) logged as audit events on main bus.
+
 ## Federation
 - Gateways declared in YAML with trusted remote public key.
 - Remote tools referenced by gateway name in agent tool lists.
@@ -105,8 +139,97 @@ These principles are the single canonical source of truth for the project. All d
 
 These principles are now locked for v2.1. The Message Pump v2.1 specification remains the canonical detail for pump behavior. Future changes require explicit discussion and amendment here first.
 
+## Handler Trust Boundary & Coroutine Isolation
+
+Handlers are treated as **untrusted code** that runs in an isolated coroutine context. 
+The message pump maintains authoritative metadata in coroutine scope and never trusts 
+handler output to preserve security-critical properties.
+
+### Coroutine Capture Pattern
+
+When dispatching a message to a handler, the pump captures metadata in coroutine scope 
+BEFORE handler execution:
+```python
+async def dispatch(msg: ParsedMessage):
+    # TRUSTED: Captured before handler runs
+    thread_uuid = msg.thread_id
+    sender_name = msg.listener_name  
+    thread_path = path_registry[thread_uuid]
+    parent = get_parent_from_path(thread_path)
+    allowed_peers = registry.get_listener(sender_name).peers
+    
+    # UNTRUSTED: Handler executes with minimal context
+    response_bytes = await handler(
+        payload=msg.deserialized_payload,
+        meta=HandlerMetadata(thread_id=thread_uuid)  # Opaque UUID only
+    )
+    
+    # TRUSTED: Coroutine scope still has authoritative metadata
+    # Process response using captured context, not handler claims
+    await process_response(
+        response_bytes,
+        actual_sender=sender_name,     # From coroutine, not handler
+        actual_thread=thread_uuid,     # From coroutine, not handler  
+        actual_parent=parent,          # From coroutine, not handler
+        allowed_peers=allowed_peers    # From registration, not handler
+    )
+```
+
+### What Handlers Cannot Do
+
+Even compromised or malicious handlers cannot:
+
+- **Forge identity**: `<from>` is always injected from coroutine-captured sender name
+- **Escape thread context**: `<thread>` is always from coroutine-captured UUID
+- **Route arbitrarily**: `<to>` is computed from coroutine-captured peers list and thread path
+- **Access other threads**: UUIDs are opaque; path registry is private
+- **Discover topology**: Only peers list is visible; no access to path structure
+- **Spoof system messages**: `<from>core</from>` only injectable by system, never handlers
+
+### What Handlers Can Do
+
+Handlers can only:
+
+- **Call declared peers**: Emit XML matching peer schemas (validated against peers list)
+- **Self-iterate**: Emit `<todo-until>` (routes back to sender automatically)
+- **Return to caller**: Emit any other payload (routes to parent in thread path)
+- **Access thread-scoped storage**: Via opaque UUID (isolated per delegation chain)
+
+### Response Processing Security
+
+Handler output (raw bytes) undergoes full security processing:
+
+1. **Wrap in dummy tags** and parse with repair mode
+2. **Extract payloads** via C14N and XSD validation
+3. **Determine routing** using coroutine-captured metadata (never handler claims)
+4. **Inject envelope** with trusted `<from>`, `<thread>`, `<to>` from coroutine scope
+5. **Re-inject to pipeline** for identical security processing
+
+Any envelope metadata in handler output is **ignored and overwritten**.
+
+### Trust Architecture
+```
+┌─────────────────────────────────────────────────────┐
+│              TRUSTED ZONE (System)                  │
+│  • Path registry (UUID → hierarchical path)         │
+│  • Listener registry (name → peers, schema)         │
+│  • Thread management (pruning, parent lookup)       │
+│  • Envelope injection (<from>, <thread>, <to>)      │
+└─────────────────────────────────────────────────────┘
+                        ↕
+            Coroutine Capture Boundary
+                        ↕
+┌─────────────────────────────────────────────────────┐
+│            UNTRUSTED ZONE (Handler)                 │
+│  • Receives: typed payload + opaque UUID            │
+│  • Returns: raw bytes                               │
+│  • Cannot: forge identity, escape thread, probe     │
+│  • Can: call peers, self-iterate, return to caller  │
+└─────────────────────────────────────────────────────┘
+```
+
+This design ensures handlers are **capability-safe by construction**: even fully 
+compromised handler code cannot violate security boundaries or topology privacy.
 ---
 
 This integrates the blind self-iteration pattern cleanly—no contradictions, stronger obliviousness, and explicit guidance on `<todo-until/>`. The unique-root enforcement for agents is called out in Configuration and Schema layers.
-
-Ready to roll with this as canonical. If you want any final phrasing tweaks or to add YAML examples, just say. 🚀

@@ -55,6 +55,54 @@ Listener(
 The organism now speaks `<add>` — fully validated, typed, and discoverable.<br/>
 Unlike rigid platforms requiring custom mappings or fragile item structures, this is pure Python — typed, testable, and sovereign.
 
+## Security Model
+
+AgentServer's security is **architectural**, not bolted-on:
+
+### Two Completely Isolated Channels
+- **Main Bus**: Standard `<message>` envelope, all traffic undergoes identical validation pipeline regardless of source
+- **OOB Channel**: Privileged commands only, different schema, localhost-bound, used for structural changes
+
+### Handler Isolation & Trust Boundary
+**Handlers are untrusted code.** Even compromised handlers cannot:
+- Forge their identity (sender name captured in coroutine scope before execution)
+- Escape thread context (thread UUID captured in coroutine, not handler output)
+- Route to arbitrary targets (routing computed from peers list, not handler claims)
+- Access other threads' data (opaque UUIDs, private path registry)
+- Discover topology (only declared peers visible)
+
+The message pump maintains authoritative metadata in coroutine scope and **never trusts handler output** for security-critical properties.
+
+### Closed-Loop Validation
+ALL messages on the main bus undergo identical security processing:
+- External ingress: WSS → pipeline → validation
+- Handler outputs: bytes → pipeline → validation (same steps!)
+- Error messages: generated → pipeline → validation
+- System notifications: generated → pipeline → validation
+
+No fast-path bypasses. No "trusted internal" messages. Everything validates.
+
+### Topology Privacy
+- Agents see only opaque thread UUIDs, never hierarchical paths
+- Private path registry (UUID → `agent.tool.subtool`) maintained by system
+- Peers list enforces capability boundaries (no ambient authority)
+- Federation gateways are opaque abstractions
+
+### Anti-Paperclip Architecture
+- Threads are ephemeral (complete audit trail, then deleted)
+- No persistent cross-thread memory primitives
+- Token budgets enforce computational bounds
+- Thread pruning prevents state accumulation
+- All reasoning visible in message history
+
+This architecture ensures:<br>
+✅ No privilege escalation (handlers can't forge privileged commands)<br>
+✅ No fast-path bypasses (even system-generated messages validate)<br>
+✅ Physical separation (privileged and regular traffic cannot mix)<br>
+✅ Capability-safe handlers (compromised code still bounded by peers list)<br>
+✅ Complete auditability (thread history is ground truth)
+
+
 ## Key Features
 ### 1. The Autonomous Schema Layer
 - Dataclass → cached XSD + example + rich tool prompt (mandatory description + field docs).
