@@ -19,7 +19,16 @@ xml-pipeline/
 │   ├── message_bus/
 │   │   ├── steps/
 │   │   │   ├── __init__.py
-│   │   │   └── repair_step.py
+│   │   │   ├── c14n.py
+│   │   │   ├── deserialization.py
+│   │   │   ├── envelope_validation.py
+│   │   │   ├── payload_extraction.py
+│   │   │   ├── repair.py
+│   │   │   ├── routing_resolution.py
+│   │   │   ├── test_c14n.py
+│   │   │   ├── test_repair.py
+│   │   │   ├── thread_assignment.py
+│   │   │   └── xsd_validation.py
 │   │   ├── __init__.py
 │   │   ├── bus.py
 │   │   ├── config.py
@@ -48,14 +57,23 @@ xml-pipeline/
 │   │   └── token-scheduling-issues.md
 │   ├── configuration.md
 │   ├── core-principles-v2.1.md
+│   ├── doc_cross_check.md
+│   ├── handler-contract-v2.1.md
 │   ├── listener-class-v2.1.md
 │   ├── message-pump-v2.1.md
+│   ├── primitives.md
 │   ├── self-grammar-generation.md
 │   └── why-not-json.md
 ├── tests/
 │   ├── scripts/
 │   │   └── generate_organism_key.py
 │   └── __init__.py
+├── xml_pipeline.egg-info/
+│   ├── PKG-INFO
+│   ├── SOURCES.txt
+│   ├── dependency_links.txt
+│   ├── requires.txt
+│   └── top_level.txt
 ├── LICENSE
 ├── README.md
 ├── __init__.py

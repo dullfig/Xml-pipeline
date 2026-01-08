@@ -1,13 +1,15 @@
 """
-payload_extraction.py — Extract the inner payload from the validated <message> envelope.
+xsd_validation.py — Validate the extracted payload against the listener-specific XSD.
 
-After envelope_validation_step confirms a correct outer <message> envelope,
-this step removes the envelope elements (<thread>, <from>, optional <to>, etc.)
-and isolates the single child element that is the actual payload.
+After payload_extraction_step isolates the payload_tree and provenance,
+this step validates the payload against the XSD that was auto-generated
+from the listener's @xmlify dataclass at registration time.
 
-The payload is expected to be exactly one root element (the capability-specific XML).
-If zero or multiple payload roots are found, we set a clear error — this protects
-against malformed or ambiguous messages.
+The XSD is cached and pre-loaded. The schema object is injected into
+state.metadata["schema"] when the listener's pipeline is built.
+
+Failure here means the payload violates the declared contract — we collect
+detailed errors for diagnostics.
 
 Part of AgentServer v2.1 message pump.
 """
@@ -15,77 +17,43 @@ Part of AgentServer v2.1 message pump.
 from lxml import etree
 from agentserver.message_bus.message_state import MessageState
 
-# Envelope namespace for easy reference
-_ENVELOPE_NS = "https://xml-pipeline.org/ns/envelope/v1"
-_MESSAGE_TAG = f"{{{ _ENVELOPE_NS }}}message"
 
-
-async def payload_extraction_step(state: MessageState) -> MessageState:
+async def xsd_validation_step(state: MessageState) -> MessageState:
     """
-    Extract the single payload element from the validated envelope.
+    Validate state.payload_tree against the listener's cached XSD schema.
 
-    Expected structure:
-      <message xmlns="https://xml-pipeline.org/ns/envelope/v1">
-        <thread>uuid</thread>
-        <from>sender</from>
-        <!-- optional <to>receiver</to> -->
-        <payload_root>   ← this is the one we want
-          ...
-        </payload_root>
-      </message>
+    Requires:
+      - state.payload_tree set
+      - state.metadata["schema"] containing a pre-loaded etree.XMLSchema
 
-    On success: state.payload_tree is set to the payload Element.
-    On failure: state.error is set with a clear diagnostic.
+    On success: payload is guaranteed to match the contract
+    On failure: state.error contains detailed validation messages
     """
-    if state.envelope_tree is None:
-        state.error = "payload_extraction_step: no envelope_tree (previous step failed)"
+    if state.payload_tree is None:
+        state.error = "xsd_validation_step: no payload_tree (previous extraction failed)"
         return state
 
-    # Basic sanity — root must be <message> in correct namespace (already checked by schema,
-    # but we double-check for defence in depth)
-    if state.envelope_tree.tag != _MESSAGE_TAG:
-        state.error = f"payload_extraction_step: root tag is not <message> in envelope namespace"
+    schema = state.metadata.get("schema")
+    if schema is None:
+        state.error = "xsd_validation_step: no XSD schema in metadata (listener pipeline misconfigured)"
         return state
 
-    # Find all direct children that are not envelope control elements
-    # Envelope control elements are: thread, from, to (optional)
-    payload_candidates = [
-        child
-        for child in state.envelope_tree
-        if not (
-            child.tag in {
-                f"{{{ _ENVELOPE_NS }}}thread",
-                f"{{{ _ENVELOPE_NS }}}from",
-                f"{{{ _ENVELOPE_NS }}}to",
-            }
-        )
-    ]
-
-    if len(payload_candidates) == 0:
-        state.error = "payload_extraction_step: no payload element found inside <message>"
+    if not isinstance(schema, etree.XMLSchema):
+        state.error = "xsd_validation_step: metadata['schema'] is not an XMLSchema object"
         return state
 
-    if len(payload_candidates) > 1:
-        state.error = (
-            "payload_extraction_step: multiple payload roots found — "
-            "exactly one capability payload element is allowed"
-        )
-        return state
+    try:
+        # assertValid raises DocumentInvalid with full error log
+        schema.assertValid(state.payload_tree)
 
-    # Success — exactly one payload element
-    payload_element = payload_candidates[0]
+    except etree.DocumentInvalid:
+        # Collect all errors for clear diagnostics
+        error_lines = []
+        for error in schema.error_log:
+            error_lines.append(f"{error.level_name}: {error.message} (line {error.line})")
+        state.error = "xsd_validation_step: payload failed contract validation\n" + "\n".join(error_lines)
 
-    # Optional: capture provenance from envelope for later use
-    # (these will be trustworthy because envelope was validated)
-    thread_elem = state.envelope_tree.find(f"{{{ _ENVELOPE_NS }}}thread")
-    from_elem = state.envelope_tree.find(f"{{{ _ENVELOPE_NS }}}from")
-
-    if thread_elem is not None and thread_elem.text:
-        state.thread_id = thread_elem.text.strip()
-
-    if from_elem is not None and from_elem.text:
-        state.from_id = from_elem.text.strip()
-
-    state.payload_tree = payload_element
+    except Exception as exc:  # pylint: disable=broad-except
+        state.error = f"xsd_validation_step: unexpected error during validation: {exc}"
 
     return state

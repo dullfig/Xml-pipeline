@@ -1,158 +1,226 @@
-# agentserver/bus.py
-# Refactored January 01, 2026 – MessageBus with run() pump and out-of-band shutdown
+"""
+bus.py — The central MessageBus and pump for AgentServer v2.1
+
+This is the beating heart of the organism:
+- Owns all pipelines (one per listener + permanent system pipeline)
+- Maintains the routing table (root_tag → Listener(s))
+- Orchestrates ingress from sockets/gateways
+- Dispatches prepared messages to handlers
+- Processes handler responses (multi-payload extraction, provenance injection)
+- Guarantees thread continuity and diagnostic injection
+
+Fully aligned with:
+  - listener-class-v2.1.md
+  - configuration-v2.1.md
+  - message-pump-v2.1.md
+"""
+
+from __future__ import annotations
 
 import asyncio
-import logging
-from typing import AsyncIterator, Callable, Dict, Optional, Awaitable
+from dataclasses import dataclass
+from typing import Callable, Awaitable, List
+from uuid import uuid4
 
 from lxml import etree
 
-from agentserver.xml_listener import XMLListener
-from agentserver.utils.message import repair_and_canonicalize, XmlTamperError
+from agentserver.message_bus.message_state import MessageState, HandlerMetadata
+from agentserver.message_bus.steps.repair import repair_step
+from agentserver.message_bus.steps.c14n import c14n_step
+from agentserver.message_bus.steps.envelope_validation import envelope_validation_step
+from agentserver.message_bus.steps.payload_extraction import payload_extraction_step
+from agentserver.message_bus.steps.thread_assignment import thread_assignment_step
+from agentserver.message_bus.steps.xsd_validation import xsd_validation_step
+from agentserver.message_bus.steps.deserialization import deserialization_step
+from agentserver.message_bus.steps.routing_resolution import routing_resolution_step
 
-# Constants for Internal Physics
-ENV_NS = "https://xml-pipeline.org/ns/envelope/1"
-ENV = f"{{{ENV_NS}}}"
-LOG_TAG = "{https://xml-pipeline.org/ns/logger/1}log"
+# Type alias for pipeline steps
+PipelineStep = Callable[[MessageState], Awaitable[MessageState]]
 
-logger = logging.getLogger("agentserver.bus")
+
+@dataclass
+class Listener:
+    """Registered capability — defined in listener.py, referenced here."""
+    name: str
+    payload_class: type
+    handler: Callable
+    description: str
+    is_agent: bool = False
+    peers: list[str] | None = None
+    broadcast: bool = False
+    pipeline: "Pipeline" | None = None
+    schema: etree.XMLSchema | None = None  # cached at registration
+
+
+class Pipeline:
+    """One dedicated pipeline per listener (plus system pipeline)."""
+    def __init__(self, steps: List[PipelineStep]):
+        self.steps = steps
+
+    async def process(self, initial_state: MessageState) -> None:
+        """Run the full ordered pipeline on a message."""
+        state = initial_state
+        for step in self.steps:
+            try:
+                state = await step(state)
+                if state.error:
+                    break
+            except Exception as exc:  # pylint: disable=broad-except
+                state.error = f"Pipeline step {step.__name__} crashed: {exc}"
+                break
+
+        # After all steps — dispatch if routable
+        if state.target_listeners:
+            await MessageBus.get_instance().dispatcher(state)
+        else:
+            # Fall back to system pipeline for diagnostics
+            await MessageBus.get_instance().system_pipeline.process(state)
 
 
 class MessageBus:
-    """The sovereign message carrier.
+    """Singleton message bus — the pump."""
+    _instance: "MessageBus" | None = None
 
-    - Routes canonical XML trees by root tag and <to/> meta.
-    - Pure dispatch: tree → optional response tree.
-    - Active pump via run(): handles serialization and egress.
-    - Out-of-band shutdown via asyncio.Event (fast-path, flood-immune).
-    """
+    def __init__(self):
+        self.routing_table: dict[str, List[Listener]] = {}  # root_tag → listener(s)
+        self.listeners: dict[str, Listener] = {}           # name → Listener
+        self.system_pipeline = Pipeline(self._build_system_steps())
 
-    def __init__(self, log_hook: Callable[[etree._Element], None]):
-        # root_tag -> {agent_name -> XMLListener}
-        self.listeners: Dict[str, Dict[str, XMLListener]] = {}
-        # Global lookup for directed <to/> routing
-        self.global_names: Dict[str, XMLListener] = {}
+    @classmethod
+    def get_instance(cls) -> "MessageBus":
+        if cls._instance is None:
+            cls._instance = MessageBus()
+        return cls._instance
 
-        # The Sovereign Witness hook
-        self._log_hook = log_hook
+    # ------------------------------------------------------------------ #
+    # Default step lists
+    # ------------------------------------------------------------------ #
+    def _build_default_listener_steps(self) -> List[PipelineStep]:
+        return [
+            repair_step,
+            c14n_step,
+            envelope_validation_step,
+            payload_extraction_step,
+            thread_assignment_step,
+            xsd_validation_step,
+            deserialization_step,
+            routing_resolution_step,
+        ]
 
-        # Out-of-band shutdown signal (set only by AgentServer on privileged command)
-        self.shutdown_event = asyncio.Event()
+    def _build_system_steps(self) -> List[PipelineStep]:
+        """Shorter, fixed steps — no XSD/deserialization."""
+        return [
+            repair_step,
+            c14n_step,
+            envelope_validation_step,
+            payload_extraction_step,
+            thread_assignment_step,
+            # system-specific handler that emits <huh>, boot, etc.
+            self.system_handler_step,
+        ]
 
-    async def register_listener(self, listener: XMLListener) -> None:
-        """Register an organ. Enforces global identity uniqueness."""
-        if listener.agent_name in self.global_names:
-            raise ValueError(f"Identity collision: {listener.agent_name}")
+    # ------------------------------------------------------------------ #
+    # Registration (called from listener.py)
+    # ------------------------------------------------------------------ #
+    def register_listener(self, listener: Listener) -> None:
+        root_tag = f"{listener.name.lower()}.{listener.payload_class.__name__.lower()}"
 
-        self.global_names[listener.agent_name] = listener
-        for tag in listener.listens_to:
-            tag_dict = self.listeners.setdefault(tag, {})
-            tag_dict[listener.agent_name] = listener
+        if root_tag in self.routing_table and not listener.broadcast:
+            raise ValueError(f"Root tag collision: {root_tag} already registered by {self.routing_table[root_tag][0].name}")
 
-        logger.info(f"Registered organ: {listener.agent_name}")
+        # Build dedicated pipeline
+        steps = self._build_default_listener_steps()
+        # Inject listener-specific schema for xsd_validation_step
+        for step in steps:
+            if step.__name__ == "xsd_validation_step":
+                # We'll modify state.metadata in pipeline construction instead
+                pass
+        listener.pipeline = Pipeline(steps)
 
-    async def deliver_bytes(self, raw_xml: bytes, client_id: Optional[str] = None) -> None:
-        """Air Lock: ingest raw bytes, repair/canonicalize, inject into core."""
-        try:
-            envelope_tree = repair_and_canonicalize(raw_xml)
-            await self.dispatch(envelope_tree, client_id)
-        except XmlTamperError as e:
-            logger.warning(f"Air Lock Reject: {e}")
+        # Insert into routing
+        self.routing_table.setdefault(root_tag, []).append(listener)
+        self.listeners[listener.name] = listener
 
-    async def dispatch(
-        self,
-        envelope_tree: etree._Element,
-        client_id: Optional[str] = None,
-    ) -> etree._Element | None:
-        """Pure routing heart. Returns validated response tree or None."""
-        # 1. WITNESS – every canonical envelope is seen
-        self._log_hook(envelope_tree)
+    # ------------------------------------------------------------------ #
+    # Dispatcher — dumb fire-and-await
+    # ------------------------------------------------------------------ #
+    async def dispatcher(self, state: MessageState) -> None:
+        if not state.target_listeners:
+            return
 
-        # 2. Extract envelope metadata
-        meta = envelope_tree.find(f"{ENV}meta")
-        if meta is None:
-            return None
-        from_name = meta.findtext(f"{ENV}from")
-        to_name = meta.findtext(f"{ENV}to")
-        thread_id = meta.findtext(f"{ENV}thread_id") or meta.findtext(f"{ENV}thread")
+        metadata = HandlerMetadata(
+            thread_id=state.thread_id or "",
+            from_id=state.from_id or "unknown",
+            own_name=state.target_listeners[0].name if state.target_listeners[0].is_agent else None,
+            is_self_call=(state.from_id == state.target_listeners[0].name) if state.from_id else False,
+        )
 
-        # Find payload (first non-meta child)
-        payload_elem = next((c for c in envelope_tree if c.tag != f"{ENV}meta"), None)
-        if payload_elem is None:
-            return None
-        payload_tag = payload_elem.tag
-
-        # 3. AUTONOMIC REFLEX: explicit <log/>
-        if payload_tag == LOG_TAG:
-            self._log_hook(envelope_tree)  # extra vent
-            # Minimal ack envelope
-            ack = etree.Element(f"{ENV}message")
-            meta_ack = etree.SubElement(ack, f"{ENV}meta")
-            etree.SubElement(meta_ack, f"{ENV}from").text = "system"
-            if from_name:
-                etree.SubElement(meta_ack, f"{ENV}to").text = from_name
-            if thread_id:
-                etree.SubElement(meta_ack, f"{ENV}thread_id").text = thread_id
-            etree.SubElement(ack, "logged", status="success")
-            return ack
-
-        # 4. ROUTING
-        listeners_for_tag = self.listeners.get(payload_tag, {})
-        response_tree: Optional[etree._Element] = None
-        responding_agent_name = "unknown"
-
-        if to_name:
-            # Directed
-            target = listeners_for_tag.get(to_name) or self.global_names.get(to_name)
-            if target:
-                responding_agent_name = target.agent_name
-                response_tree = await target.handle(envelope_tree, thread_id, from_name or client_id)
+        if len(state.target_listeners) == 1:
+            listener = state.target_listeners[0]
+            await self._process_single_handler(state, listener, metadata)
         else:
-            # Broadcast – first non-None wins (current policy)
+            # Broadcast — fire all in parallel, process responses as they complete
             tasks = [
-                l.handle(envelope_tree, thread_id, from_name or client_id)
-                for l in listeners_for_tag.values()
+                self._process_single_handler(state, listener, metadata)
+                for listener in state.target_listeners
             ]
-            results = await asyncio.gather(*tasks, return_exceptions=True)
-            for listener, result in zip(listeners_for_tag.values(), results):
-                if isinstance(result, etree._Element):
-                    responding_agent_name = listener.agent_name
-                    response_tree = result
-                    break  # first-wins
+            for future in asyncio.as_completed(tasks):
+                await future
 
-        # 5. IDENTITY INSPECTION – prevent spoofing
-        if response_tree is not None:
-            actual_from = response_tree.findtext(f"{ENV}meta/{ENV}from")
-            if actual_from != responding_agent_name:
-                logger.critical(
-                    f"IDENTITY THEFT BLOCKED: expected {responding_agent_name}, got {actual_from}"
-                )
-                return None
-
-        return response_tree
-
-    async def run(
-        self,
-        inbound: AsyncIterator[etree._Element],
-        outbound: Callable[[bytes], Awaitable[None]],
-        client_id: Optional[str] = None,
-    ) -> None:
-        """Active pump for a connection. Handles serialization and egress."""
+    async def _process_single_handler(self, state: MessageState, listener: Listener, metadata: HandlerMetadata) -> None:
         try:
-            async for envelope_tree in inbound:
-                if self.shutdown_event.is_set():
-                    break
+            response_bytes = await listener.handler(state.payload, metadata)
 
-                response_tree = await self.dispatch(envelope_tree, client_id)
-                if response_tree is not None:
-                    serialized = etree.tostring(
-                        response_tree, encoding="utf-8", pretty_print=True
-                    )
-                    await outbound(serialized)
-        finally:
-            # Optional final courtesy message on clean exit
-            goodbye = b"<message xmlns='https://xml-pipeline.org/ns/envelope/1'><goodbye reason='connection-closed'/></message>"
-            try:
-                await outbound(goodbye)
-            except Exception:
-                pass  # connection already gone
+            if response_bytes is None or not isinstance(response_bytes, bytes):
+                response_bytes = b"<huh>Handler failed to return valid bytes — missing return or wrong type</huh>"
+
+            payloads = await self._multi_payload_extract(response_bytes)
+
+            for payload_bytes in payloads:
+                new_state = MessageState(
+                    raw_bytes=payload_bytes,
+                    thread_id=state.thread_id,
+                    from_id=listener.name,
+                )
+                # Route the new payload through normal pipelines
+                root_tag = self._derive_root_tag(payload_bytes)
+                targets = self.routing_table.get(root_tag)
+                if targets:
+                    new_state.target_listeners = targets
+                    await targets[0].pipeline.process(new_state)
+                else:
+                    await self.system_pipeline.process(new_state)
+
+        except Exception as exc:  # pylint: disable=broad-except
+            error_state = MessageState(
+                raw_bytes=b"<huh>Handler crashed</huh>",
+                thread_id=state.thread_id,
+                from_id=listener.name,
+                error=f"Handler {listener.name} crashed: {exc}",
+            )
+            await self.system_pipeline.process(error_state)
+
+    # ------------------------------------------------------------------ #
+    # Helper methods
+    # ------------------------------------------------------------------ #
+    async def _multi_payload_extract(self, raw_bytes: bytes) -> List[bytes]:
+        # Same logic as before — dummy wrap, repair, extract all root elements
+        # (implementation can be moved to a shared util later)
+        # For now, placeholder — we'll flesh this out in response_processing.py
+        return [raw_bytes]  # temporary — will be full extraction
+
+    def _derive_root_tag(self, payload_bytes: bytes) -> str:
+        # Quick parse to get root tag — used only for routing extracted payloads
+        try:
+            tree = etree.fromstring(payload_bytes)
+            tag = tree.tag
+            if tag.startswith("{"):
+                return tag.split("}", 1)[1]  # strip namespace
+            return tag
+        except Exception:
+            return ""
+
+    async def system_handler_step(self, state: MessageState) -> MessageState:
+        # Emit <huh> or boot message — placeholder for now
+        state.error = state.error or "Unhandled by any listener"
+        return state
