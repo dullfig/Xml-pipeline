@@ -201,8 +201,18 @@ class TUIConsole:
             """Switch focus between output and input."""
             event.app.layout.focus_previous()
 
+        # Helper to check if output is focused
+        def output_focused():
+            try:
+                return self.app and self.app.layout.has_focus(self.output.buffer)
+            except Exception:
+                return False
+
+        from prompt_toolkit.filters import Condition
+        output_focus_filter = Condition(output_focused)
+
         # Arrow keys for scrolling output (move cursor to scroll view)
-        @kb.add("up", filter=lambda: self.app.layout.has_focus(self.output.buffer))
+        @kb.add("up", filter=output_focus_filter)
         def handle_output_up(event):
             """Scroll output up."""
             buf = self.output.buffer
@@ -212,7 +222,7 @@ class TUIConsole:
                 new_pos = doc.translate_row_col_to_index(doc.cursor_position_row - 1, 0)
                 buf.cursor_position = new_pos
 
-        @kb.add("down", filter=lambda: self.app.layout.has_focus(self.output.buffer))
+        @kb.add("down", filter=output_focus_filter)
         def handle_output_down(event):
             """Scroll output down."""
             buf = self.output.buffer
@@ -221,7 +231,7 @@ class TUIConsole:
                 new_pos = doc.translate_row_col_to_index(doc.cursor_position_row + 1, 0)
                 buf.cursor_position = new_pos
 
-        @kb.add("pageup", filter=lambda: self.app.layout.has_focus(self.output.buffer))
+        @kb.add("pageup", filter=output_focus_filter)
         def handle_output_pageup(event):
             """Scroll output up a page."""
             buf = self.output.buffer
@@ -230,7 +240,7 @@ class TUIConsole:
             new_pos = doc.translate_row_col_to_index(new_row, 0)
             buf.cursor_position = new_pos
 
-        @kb.add("pagedown", filter=lambda: self.app.layout.has_focus(self.output.buffer))
+        @kb.add("pagedown", filter=output_focus_filter)
         def handle_output_pagedown(event):
             """Scroll output down a page."""
             buf = self.output.buffer
@@ -239,12 +249,12 @@ class TUIConsole:
             new_pos = doc.translate_row_col_to_index(new_row, 0)
             buf.cursor_position = new_pos
 
-        @kb.add("home", filter=lambda: self.app.layout.has_focus(self.output.buffer))
+        @kb.add("home", filter=output_focus_filter)
         def handle_output_home(event):
             """Scroll to top of output."""
             self.output.buffer.cursor_position = 0
 
-        @kb.add("end", filter=lambda: self.app.layout.has_focus(self.output.buffer))
+        @kb.add("end", filter=output_focus_filter)
         def handle_output_end(event):
             """Scroll to bottom of output."""
             self.output.buffer.cursor_position = len(self.output.buffer.text)
