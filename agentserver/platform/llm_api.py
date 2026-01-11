@@ -118,9 +118,13 @@ async def complete(
 
     # Make LLM call via router
     try:
-        from agentserver.llm import generate
+        from agentserver.llm import complete as llm_complete
 
-        response = await generate(
+        # Use model from kwargs or default
+        model = kwargs.pop("model", "grok-3-mini-beta")
+
+        response = await llm_complete(
+            model=model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -129,10 +133,10 @@ async def complete(
 
         logger.debug(
             f"platform.complete: agent={agent_name} thread={thread_id[:8]}... "
-            f"messages={len(messages)} response_len={len(response)}"
+            f"messages={len(messages)} response_len={len(response.content)}"
         )
 
-        return response
+        return response.content
 
     except Exception as e:
         logger.error(f"LLM call failed for {agent_name}: {e}")
