@@ -313,8 +313,12 @@ class TUIConsole:
         self.print_raw(f"Type /help for commands, @listener message to chat", "output.dim")
         self.print_raw("", "output")
 
+        # Patch stdout so any external prints go to our output area
+        from prompt_toolkit.patch_stdout import patch_stdout
+
         try:
-            await self.app.run_async()
+            with patch_stdout(raw=True):
+                await self.app.run_async()
         except Exception as e:
             print(f"Console error: {e}")
         finally:

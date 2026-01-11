@@ -125,23 +125,18 @@ async def handle_response_print(payload: ShoutedResponse, metadata: HandlerMetad
     Print the final response to the console.
 
     Routes output to the TUI console if available, otherwise prints to stdout.
+    With TUI, stdout is patched so prints appear in the output area.
     """
     console = None
     try:
         from run_organism import get_console
         console = get_console()
-    except ImportError as e:
-        console = None
+    except ImportError:
+        pass
 
-    if console is not None:
-        if hasattr(console, 'on_response'):
-            try:
-                console.on_response("shouter", payload)
-                return  # Success - exit without fallback print
-            except Exception as e:
-                pass  # Fall through to fallback
-        # Console exists but no on_response - shouldn't happen
-
-    # Fallback only runs if console is None
-    # This should NOT print if TUI is running
-    return None
+    if console is not None and hasattr(console, 'on_response'):
+        # Use TUI's output buffer directly (preferred)
+        console.on_response("shouter", payload)
+    else:
+        # Print to stdout (TUI patches this, simple mode shows directly)
+        print(f"\033[36m[response] {payload.message}\033[0m")
