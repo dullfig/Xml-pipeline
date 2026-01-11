@@ -492,6 +492,8 @@ class SecureConsole:
         cprint("  /listeners         List registered listeners", Colors.DIM)
         cprint("  /threads           List active threads", Colors.DIM)
         cprint("  /buffer <thread>   Inspect thread's context buffer", Colors.DIM)
+        cprint("  /monitor <thread>  Show recent messages from thread", Colors.DIM)
+        cprint("  /monitor *         Show recent messages from all threads", Colors.DIM)
         cprint("  /config            View current configuration", Colors.DIM)
         cprint("")
         cprint("Protected (require password):", Colors.YELLOW)
@@ -593,6 +595,79 @@ class SecureConsole:
             payload_repr = repr(slot.payload)[:100]
             cprint(f"    {payload_repr}", Colors.DIM)
         cprint("")
+
+    async def _cmd_monitor(self, args: str) -> None:
+        """Show recent messages from a thread's context buffer."""
+        if not args:
+            cprint("Usage: /monitor <thread-id>", Colors.DIM)
+            cprint("       /monitor *  (show all threads)", Colors.DIM)
+            return
+
+        from agentserver.memory import get_context_buffer
+        buffer = get_context_buffer()
+
+        # Find thread by prefix (or * for all)
+        monitor_all = args.strip() == "*"
+        thread_id = None
+
+        if not monitor_all:
+            for tid in buffer._threads.keys():
+                if tid.startswith(args):
+                    thread_id = tid
+                    break
+
+            if not thread_id:
+                cprint(f"Thread not found: {args}", Colors.RED)
+                return
+
+        # Show header
+        if monitor_all:
+            cprint("\nAll threads:", Colors.CYAN)
+        else:
+            cprint(f"\nThread {thread_id[:12]}...:", Colors.CYAN)
+        cprint("-" * 60, Colors.DIM)
+
+        # Show messages
+        if monitor_all:
+            for tid, ctx in buffer._threads.items():
+                if len(ctx) > 0:
+                    cprint(f"\n[{tid[:12]}...] ({len(ctx)} messages)", Colors.YELLOW)
+                    # Show last 5 messages per thread
+                    for slot in ctx.get_slice(-5):
+                        self._print_monitor_slot(tid, slot)
+        else:
+            ctx = buffer.get_thread(thread_id)
+            # Show all messages (up to 20)
+            slots = ctx.get_slice(-20)
+            for slot in slots:
+                self._print_monitor_slot(thread_id, slot)
+            if len(ctx) > 20:
+                cprint(f"  ... ({len(ctx) - 20} earlier messages)", Colors.DIM)
+
+        cprint("")
+
+    def _print_monitor_slot(self, thread_id: str, slot) -> None:
+        """Print a single slot in monitor format."""
+        payload_type = type(slot.payload).__name__
+        tid_short = thread_id[:8]
+        timestamp = slot.metadata.timestamp.split("T")[1][:8] if "T" in slot.metadata.timestamp else ""
+
+        # Color based on direction
+        if slot.from_id == "console":
+            color = Colors.GREEN
+        elif "response" in slot.to_id.lower() or "console" in slot.to_id.lower():
+            color = Colors.CYAN
+        else:
+            color = Colors.DIM
+
+        # Format: [time] thread: from -> to: Type
+        cprint(f"[{timestamp}] {tid_short}: {slot.from_id} -> {slot.to_id}: {payload_type}", color)
+
+        # Show payload content (abbreviated)
+        payload_str = repr(slot.payload)
+        if len(payload_str) > 80:
+            payload_str = payload_str[:77] + "..."
+        cprint(f"         {payload_str}", Colors.DIM)
 
     async def _cmd_config(self, args: str) -> None:
         """View current configuration (read-only)."""
