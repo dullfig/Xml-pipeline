@@ -195,12 +195,12 @@ class TUIConsole:
         @kb.add("up")
         def handle_up(event):
             """Previous command in history."""
-            self.input_buffer.auto_up()
+            self.input_buffer.history_backward()
 
         @kb.add("down")
         def handle_down(event):
             """Next command in history."""
-            self.input_buffer.auto_down()
+            self.input_buffer.history_forward()
 
         # Page Up/Down scroll output (no focus change needed)
         @kb.add("pageup")
