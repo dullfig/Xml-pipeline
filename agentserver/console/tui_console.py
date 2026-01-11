@@ -87,9 +87,10 @@ STYLE = Style.from_dict({
 class OutputBuffer:
     """Manages scrolling output history."""
 
-    def __init__(self, max_lines: int = 1000):
+    def __init__(self, max_lines: int = 1000, visible_lines: int = 50):
         self.lines: List[tuple] = []  # (style_class, text)
         self.max_lines = max_lines
+        self.visible_lines = visible_lines  # Lines to show on screen
 
     def append(self, text: str, style: str = "output"):
         """Add a line to output."""
@@ -105,11 +106,13 @@ class OutputBuffer:
             self.lines = self.lines[-self.max_lines:]
 
     def get_formatted_text(self) -> FormattedText:
-        """Get formatted text for display."""
+        """Get formatted text for display - only show last N lines."""
+        # Only return the most recent lines that fit on screen
+        visible = self.lines[-self.visible_lines:] if len(self.lines) > self.visible_lines else self.lines
         result = []
-        for style, text in self.lines:
+        for style, text in visible:
             result.append((f"class:{style}", text))
-            result.append(("", "\n"))  # Newline as separate unstyled element
+            result.append(("", "\n"))
         return FormattedText(result)
 
     def clear(self):
@@ -185,17 +188,24 @@ class TUIConsole:
             """Handle Ctrl+L - clear output."""
             self.output.clear()
 
-        # Output area (scrolling)
+        # Output area (scrolling) - use scroll_offsets to keep bottom visible
         output_control = FormattedTextControl(
             text=lambda: self.output.get_formatted_text(),
             focusable=False,
         )
 
+        # Create window that always scrolls to bottom
+        from prompt_toolkit.layout.controls import UIContent
+
         output_window = Window(
             content=output_control,
             wrap_lines=True,
             right_margins=[ScrollbarMargin(display_arrows=True)],
+            always_hide_cursor=True,
         )
+
+        # Store reference so we can scroll
+        self.output_window = output_window
 
         # Separator line with status
         def get_separator():
