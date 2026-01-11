@@ -87,10 +87,9 @@ STYLE = Style.from_dict({
 class OutputBuffer:
     """Manages scrolling output history."""
 
-    def __init__(self, max_lines: int = 1000, visible_lines: int = 20):
+    def __init__(self, max_lines: int = 1000):
         self.lines: List[tuple] = []  # (style_class, text)
         self.max_lines = max_lines
-        self.visible_lines = visible_lines  # Lines to show (fits most screens)
 
     def append(self, text: str, style: str = "output"):
         """Add a line to output."""
@@ -106,11 +105,9 @@ class OutputBuffer:
             self.lines = self.lines[-self.max_lines:]
 
     def get_formatted_text(self) -> FormattedText:
-        """Get formatted text for display - show last N lines."""
-        # Only return the most recent lines
-        visible = self.lines[-self.visible_lines:] if len(self.lines) > self.visible_lines else self.lines
+        """Get formatted text for display - all lines."""
         result = []
-        for style, text in visible:
+        for style, text in self.lines:
             result.append((f"class:{style}", text))
             result.append(("", "\n"))
         return FormattedText(result)
@@ -187,6 +184,36 @@ class TUIConsole:
         def handle_ctrl_l(event):
             """Handle Ctrl+L - clear output."""
             self.output.clear()
+            self.user_scrolled = False
+
+        @kb.add("pageup")
+        def handle_page_up(event):
+            """Scroll output up."""
+            self.output_window.vertical_scroll = max(0, self.output_window.vertical_scroll - 10)
+            self.user_scrolled = True
+
+        @kb.add("pagedown")
+        def handle_page_down(event):
+            """Scroll output down."""
+            self.output_window.vertical_scroll += 10
+            # Check if at bottom
+            if self.output_window.vertical_scroll >= len(self.output.lines) - 5:
+                self.user_scrolled = False
+
+        @kb.add("end")
+        def handle_end(event):
+            """Scroll to bottom."""
+            self.output_window.vertical_scroll = 999999
+            self.user_scrolled = False
+
+        @kb.add("home")
+        def handle_home(event):
+            """Scroll to top."""
+            self.output_window.vertical_scroll = 0
+            self.user_scrolled = True
+
+        # Track if user manually scrolled
+        self.user_scrolled = False
 
         # Output control
         output_control = FormattedTextControl(
@@ -194,24 +221,15 @@ class TUIConsole:
             focusable=False,
         )
 
-        # Output window with scroll to bottom
+        # Output window - takes all available space
         self.output_window = Window(
             content=output_control,
             wrap_lines=True,
         )
-        # Force scroll to bottom (large number ensures we're at end)
+        # Start scrolled to bottom
         self.output_window.vertical_scroll = 999999
 
-        # Empty filler that expands to push output to bottom
-        filler = Window(height=Dimension(weight=1))
-
-        # Upper area: filler on top, output at bottom
-        upper_area = HSplit([
-            filler,
-            self.output_window,
-        ])
-
-        # Separator line with status
+        # Separator line with status (shows scroll hint if not at bottom)
         def get_separator():
             name = self.pump.config.name
             width = 60
@@ -247,7 +265,7 @@ class TUIConsole:
 
         # Main layout
         root = HSplit([
-            upper_area,  # Filler + output (output at bottom)
+            self.output_window,  # Scrollable output history
             separator,
             input_row,
         ])
@@ -282,8 +300,8 @@ class TUIConsole:
         """Invalidate the app to trigger redraw."""
         if self.app:
             try:
-                # Keep output scrolled to bottom
-                if hasattr(self, 'output_window'):
+                # Auto-scroll to bottom only if user hasn't manually scrolled up
+                if hasattr(self, 'output_window') and not getattr(self, 'user_scrolled', False):
                     self.output_window.vertical_scroll = 999999
                 self.app.invalidate()
             except Exception:
@@ -422,6 +440,8 @@ class TUIConsole:
         self.print_raw("  Ctrl+C / Ctrl+D    Quit", "output.dim")
         self.print_raw("  Ctrl+L             Clear output", "output.dim")
         self.print_raw("  Up/Down            Command history", "output.dim")
+        self.print_raw("  Page Up/Down       Scroll output history", "output.dim")
+        self.print_raw("  Home/End           Jump to top/bottom", "output.dim")
 
     async def _cmd_status(self, args: str):
         """Show status."""
