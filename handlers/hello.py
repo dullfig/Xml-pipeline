@@ -130,17 +130,18 @@ async def handle_response_print(payload: ShoutedResponse, metadata: HandlerMetad
     try:
         from run_organism import get_console
         console = get_console()
-    except ImportError:
-        pass
+    except ImportError as e:
+        console = None
 
-    if console and hasattr(console, 'on_response'):
-        try:
-            console.on_response("shouter", payload)
-            return  # Success - don't fall through to print
-        except Exception as e:
-            # Debug: show error but continue to fallback
-            print(f"\n\033[31m[console error] {e}\033[0m")
+    if console is not None:
+        if hasattr(console, 'on_response'):
+            try:
+                console.on_response("shouter", payload)
+                return  # Success - exit without fallback print
+            except Exception as e:
+                pass  # Fall through to fallback
+        # Console exists but no on_response - shouldn't happen
 
-    # Fallback: print to stdout (only if console not available or failed)
-    print(f"\n\033[36m[response] {payload.message}\033[0m")
+    # Fallback only runs if console is None
+    # This should NOT print if TUI is running
     return None
