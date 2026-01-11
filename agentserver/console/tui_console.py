@@ -87,10 +87,10 @@ STYLE = Style.from_dict({
 class OutputBuffer:
     """Manages scrolling output history."""
 
-    def __init__(self, max_lines: int = 1000, visible_lines: int = 50):
+    def __init__(self, max_lines: int = 1000, visible_lines: int = 20):
         self.lines: List[tuple] = []  # (style_class, text)
         self.max_lines = max_lines
-        self.visible_lines = visible_lines  # Lines to show on screen
+        self.visible_lines = visible_lines  # Lines to show (fits most screens)
 
     def append(self, text: str, style: str = "output"):
         """Add a line to output."""
@@ -194,12 +194,13 @@ class TUIConsole:
             focusable=False,
         )
 
-        # Output window - don't extend height, just show what we have
-        output_window = Window(
+        # Output window with scroll to bottom
+        self.output_window = Window(
             content=output_control,
             wrap_lines=True,
-            dont_extend_height=True,  # Only take space needed
         )
+        # Force scroll to bottom (large number ensures we're at end)
+        self.output_window.vertical_scroll = 999999
 
         # Empty filler that expands to push output to bottom
         filler = Window(height=Dimension(weight=1))
@@ -207,7 +208,7 @@ class TUIConsole:
         # Upper area: filler on top, output at bottom
         upper_area = HSplit([
             filler,
-            output_window,
+            self.output_window,
         ])
 
         # Separator line with status
@@ -281,6 +282,9 @@ class TUIConsole:
         """Invalidate the app to trigger redraw."""
         if self.app:
             try:
+                # Keep output scrolled to bottom
+                if hasattr(self, 'output_window'):
+                    self.output_window.vertical_scroll = 999999
                 self.app.invalidate()
             except Exception:
                 pass
