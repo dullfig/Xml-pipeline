@@ -251,6 +251,7 @@ class ContextBuffer:
                 "total_slots": total_slots,
                 "max_threads": self.max_threads,
                 "max_slots_per_thread": self.max_slots_per_thread,
+                "threads": list(self._threads.keys()),
             }
 
     def clear(self):
