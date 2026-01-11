@@ -264,17 +264,12 @@ class TUIConsole:
             self._invalidate()
 
     def _invalidate(self):
-        """Invalidate the app to trigger redraw (thread-safe)."""
-        if self.app and self.app.is_running:
-            # Use call_soon_threadsafe for cross-task updates
+        """Invalidate the app to trigger redraw."""
+        if self.app:
             try:
-                loop = self.app.loop
-                if loop and loop.is_running():
-                    loop.call_soon_threadsafe(self.app.invalidate)
-                else:
-                    self.app.invalidate()
-            except Exception:
                 self.app.invalidate()
+            except Exception:
+                pass
 
     def _print_simple(self, text: str, style: str = "output"):
         """Print in simple mode with ANSI colors."""
@@ -313,12 +308,25 @@ class TUIConsole:
         self.print_raw(f"Type /help for commands, @listener message to chat", "output.dim")
         self.print_raw("", "output")
 
-        # Patch stdout so any external prints go to our output area
-        from prompt_toolkit.patch_stdout import patch_stdout
-
         try:
-            with patch_stdout(raw=True):
+            # Create a background task to poll for updates
+            async def refresh_loop():
+                while self.running:
+                    await asyncio.sleep(0.1)  # 100ms refresh rate
+                    if self.app and self.app.is_running:
+                        self.app.invalidate()
+
+            # Start refresh loop as background task
+            refresh_task = asyncio.create_task(refresh_loop())
+
+            try:
                 await self.app.run_async()
+            finally:
+                refresh_task.cancel()
+                try:
+                    await refresh_task
+                except asyncio.CancelledError:
+                    pass
         except Exception as e:
             print(f"Console error: {e}")
         finally:
