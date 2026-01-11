@@ -27,6 +27,78 @@ class HandlerMetadata:
     from_id: str
     own_name: str | None = None          # Only for agent: true listeners
     is_self_call: bool = False           # Convenience flag
+    usage_instructions: str = ""         # Peer schemas for LLM prompts
+    todo_nudge: str = ""                 # Raised eyebrows: "your todos appear complete"
+
+
+class _ResponseMarker:
+    """Sentinel indicating 'respond to caller'."""
+    pass
+
+RESPOND_TO_CALLER = _ResponseMarker()
+
+
+@dataclass
+class HandlerResponse:
+    """
+    Clean return type for handlers.
+
+    Handlers return this instead of raw XML bytes.
+    The pump handles envelope wrapping.
+
+    Usage:
+        # Forward to specific listener:
+        return HandlerResponse(payload=MyPayload(...), to="target")
+
+        # Respond back to caller (prunes call chain):
+        return HandlerResponse.respond(MyPayload(...))
+    """
+    payload: Any                           # @xmlify dataclass instance
+    to: str | _ResponseMarker              # Target listener name, or RESPOND_TO_CALLER
+
+    @classmethod
+    def respond(cls, payload: Any) -> 'HandlerResponse':
+        """
+        Create a response back to the caller.
+
+        The pump will look up the call chain, prune it, and route
+        back to whoever called this handler.
+        """
+        return cls(payload=payload, to=RESPOND_TO_CALLER)
+
+    @property
+    def is_response(self) -> bool:
+        """Check if this is a response (back to caller) vs forward (to named target)."""
+        return isinstance(self.to, _ResponseMarker)
+
+
+@dataclass
+class SystemError:
+    """
+    System error sent back to agent for retry.
+
+    Generic message that doesn't reveal topology.
+    Keeps thread alive so agent can try again.
+    """
+    code: str              # Generic code: "routing", "validation", "timeout"
+    message: str           # Human-readable, non-revealing message
+    retry_allowed: bool = True
+
+    def to_xml(self) -> str:
+        """Manual XML serialization (avoids xmlify issues with future annotations)."""
+        return f"""<SystemError xmlns="">
+  <code>{self.code}</code>
+  <message>{self.message}</message>
+  <retry-allowed>{str(self.retry_allowed).lower()}</retry-allowed>
+</SystemError>"""
+
+
+# Standard error messages (intentionally generic)
+ROUTING_ERROR = SystemError(
+    code="routing",
+    message="Message could not be delivered. Please verify your target and try again.",
+    retry_allowed=True,
+)
 
 
 @dataclass

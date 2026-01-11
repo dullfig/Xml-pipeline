@@ -29,7 +29,9 @@ from agentserver.message_bus.steps.c14n import c14n_step
 from agentserver.message_bus.steps.envelope_validation import envelope_validation_step
 from agentserver.message_bus.steps.payload_extraction import payload_extraction_step
 from agentserver.message_bus.steps.thread_assignment import thread_assignment_step
-from agentserver.message_bus.message_state import MessageState, HandlerMetadata
+from agentserver.message_bus.message_state import MessageState, HandlerMetadata, HandlerResponse, SystemError, ROUTING_ERROR
+from agentserver.message_bus.thread_registry import get_registry
+from agentserver.message_bus.todo_registry import get_todo_registry
 
 
 # ============================================================================
@@ -62,6 +64,9 @@ class OrganismConfig:
     max_concurrent_handlers: int = 20     # Concurrent handler invocations
     max_concurrent_per_agent: int = 5     # Per-agent rate limit
 
+    # LLM configuration (optional)
+    llm_config: Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class Listener:
@@ -74,6 +79,7 @@ class Listener:
     broadcast: bool = False
     schema: etree.XMLSchema = field(default=None, repr=False)
     root_tag: str = ""
+    usage_instructions: str = ""  # Generated at registration for LLM agents
 
 
 # ============================================================================
@@ -209,8 +215,66 @@ class StreamPump:
         return listener
 
     def register_all(self) -> None:
+        # First pass: register all listeners
         for lc in self.config.listeners:
             self.register_listener(lc)
+
+        # Second pass: build usage instructions (needs all listeners registered)
+        for listener in self.listeners.values():
+            if listener.is_agent and listener.peers:
+                listener.usage_instructions = self._build_usage_instructions(listener)
+
+    def _build_usage_instructions(self, agent: Listener) -> str:
+        """
+        Build LLM system prompt instructions from peer schemas.
+
+        Generates human-readable documentation of what messages
+        this agent can send to its peers.
+        """
+        lines = [
+            f"You are the {agent.name} agent.",
+            f"Description: {agent.description}",
+            "",
+            "You can send messages to the following peers:",
+        ]
+
+        for peer_name in agent.peers:
+            peer = self.listeners.get(peer_name)
+            if not peer:
+                lines.append(f"\n## {peer_name} (not registered)")
+                continue
+
+            lines.append(f"\n## {peer_name}")
+            lines.append(f"Description: {peer.description}")
+
+            # Get XSD schema as readable XML
+            if hasattr(peer.payload_class, 'xsd'):
+                xsd_tree = peer.payload_class.xsd()
+                xsd_str = etree.tostring(xsd_tree, pretty_print=True, encoding='unicode')
+                lines.append(f"Expected payload schema:\n```xml\n{xsd_str}```")
+
+            # Also show a simple example structure
+            if hasattr(peer.payload_class, '__dataclass_fields__'):
+                fields = peer.payload_class.__dataclass_fields__
+                example_lines = [f"<{peer.payload_class.__name__}>"]
+                for fname, finfo in fields.items():
+                    example_lines.append(f"  <{fname}>...</{fname}>")
+                example_lines.append(f"</{peer.payload_class.__name__}>")
+                lines.append(f"Example structure:\n```xml\n" + "\n".join(example_lines) + "\n```")
+
+        lines.append("\n---")
+        lines.append("## Important: Response Semantics")
+        lines.append("")
+        lines.append("When you RESPOND (return to your caller), your call chain is pruned.")
+        lines.append("This means:")
+        lines.append("- Any sub-agents you called are effectively terminated")
+        lines.append("- Their state/context is lost (e.g., calculator memory, scratch space)")
+        lines.append("- You cannot call them again in the same context after responding")
+        lines.append("")
+        lines.append("Therefore: Complete ALL sub-tasks before responding to your caller.")
+        lines.append("If you need results from a peer, wait for their response before you respond.")
+
+        return "\n".join(lines)
 
     def _generate_schema(self, payload_class: type) -> etree.XMLSchema:
         """Generate XSD schema from xmlified payload class."""
@@ -262,6 +326,11 @@ class StreamPump:
 
         For broadcast, yields one response per listener.
         Each response becomes a new message in the stream.
+
+        Handlers can return:
+        - None: no response needed
+        - HandlerResponse(payload, to): clean dataclass + target (preferred)
+        - bytes: raw envelope XML (legacy, for backwards compatibility)
         """
         if state.error or not state.target_listeners:
             # Pass through errors/unroutable for downstream handling
@@ -276,21 +345,114 @@ class StreamPump:
                     await semaphore.acquire()
 
                 try:
+                    # Ensure we have a valid thread chain
+                    registry = get_registry()
+                    todo_registry = get_todo_registry()
+                    current_thread = state.thread_id or ""
+
+                    # Check if thread exists in registry; if not, register it
+                    if current_thread and not registry.lookup(current_thread):
+                        # New conversation - register existing UUID to chain
+                        # The UUID was assigned by thread_assignment_step
+                        from_id = state.from_id or "external"
+                        registry.register_thread(current_thread, from_id, listener.name)
+
+                    # Check for todo matches on this message
+                    # This may raise eyebrows on watchers for this thread
+                    if current_thread and state.payload:
+                        payload_type = type(state.payload).__name__
+                        todo_registry.check(
+                            thread_id=current_thread,
+                            payload_type=payload_type,
+                            from_id=state.from_id or "",
+                            payload=state.payload,
+                        )
+
+                    # Detect self-calls (agent sending to itself)
+                    is_self_call = (state.from_id or "") == listener.name
+
+                    # Get any raised eyebrows for this agent (for nagging)
+                    todo_nudge = ""
+                    if listener.is_agent and current_thread:
+                        raised = todo_registry.get_raised_for(current_thread, listener.name)
+                        todo_nudge = todo_registry.format_nudge(raised)
+
                     metadata = HandlerMetadata(
-                        thread_id=state.thread_id or "",
+                        thread_id=current_thread,
                         from_id=state.from_id or "",
                         own_name=listener.name if listener.is_agent else None,
+                        is_self_call=is_self_call,
+                        usage_instructions=listener.usage_instructions,
+                        todo_nudge=todo_nudge,
                     )
 
-                    response_bytes = await listener.handler(state.payload, metadata)
+                    response = await listener.handler(state.payload, metadata)
 
-                    if not isinstance(response_bytes, bytes):
+                    # None means "no response needed" - don't re-inject
+                    if response is None:
+                        continue
+
+                    # Handle clean HandlerResponse (preferred)
+                    if isinstance(response, HandlerResponse):
+                        registry = get_registry()
+
+                        if response.is_response:
+                            # Response back to caller - prune chain
+                            target, new_thread_id = registry.prune_for_response(current_thread)
+                            if target is None:
+                                # Chain exhausted - nowhere to respond to
+                                continue
+                            to_id = target
+                            thread_id = new_thread_id
+                        else:
+                            # Forward to named target - validate against peers
+                            requested_to = response.to
+
+                            # Enforce peer constraints for agents
+                            if listener.is_agent and listener.peers:
+                                if requested_to not in listener.peers:
+                                    # Agent trying to send to non-peer - send generic error back to agent
+                                    # Log details internally but don't reveal to agent
+                                    import logging
+                                    logging.getLogger(__name__).warning(
+                                        f"Peer violation: {listener.name} -> {requested_to} (allowed: {listener.peers})"
+                                    )
+
+                                    # Send SystemError back to the agent (keeps thread alive)
+                                    error_bytes = self._wrap_in_envelope(
+                                        payload=ROUTING_ERROR,
+                                        from_id="system",
+                                        to_id=listener.name,
+                                        thread_id=current_thread,
+                                    )
+                                    yield MessageState(
+                                        raw_bytes=error_bytes,
+                                        thread_id=current_thread,
+                                        from_id="system",
+                                    )
+                                    continue
+
+                            to_id = requested_to
+                            thread_id = registry.extend_chain(current_thread, to_id)
+
+                        response_bytes = self._wrap_in_envelope(
+                            payload=response.payload,
+                            from_id=listener.name,
+                            to_id=to_id,
+                            thread_id=thread_id,
+                        )
+                    # Legacy: raw bytes (backwards compatible)
+                    elif isinstance(response, bytes):
+                        response_bytes = response
+                        thread_id = state.thread_id
+                    else:
                         response_bytes = b"<huh>Handler returned invalid type</huh>"
+                        thread_id = state.thread_id
 
                     # Yield response — will be processed by next iteration
                     yield MessageState(
                         raw_bytes=response_bytes,
-                        thread_id=state.thread_id,
+                        thread_id=thread_id,
                         from_id=listener.name,
                     )
 
@@ -305,6 +467,37 @@ class StreamPump:
                     from_id=listener.name,
                     error=str(exc),
                 )
+
+    def _wrap_in_envelope(self, payload: Any, from_id: str, to_id: str, thread_id: str) -> bytes:
+        """Wrap a dataclass payload in a message envelope."""
+        # Serialize payload to XML
+        if hasattr(payload, 'to_xml'):
+            # SystemError and similar have manual to_xml()
+            payload_str = payload.to_xml()
+        elif hasattr(payload, 'xml_value'):
+            # @xmlify dataclasses
+            payload_class_name = type(payload).__name__
+            payload_tree = payload.xml_value(payload_class_name)
+            payload_str = etree.tostring(payload_tree, encoding='unicode')
+        else:
+            # Fallback for non-xmlify classes
+            payload_class_name = type(payload).__name__
+            payload_str = f"<{payload_class_name}>{payload}</{payload_class_name}>"
+
+        # Add xmlns="" to keep payload out of envelope namespace
+        if 'xmlns=' not in payload_str:
+            idx = payload_str.index('>')
+            payload_str = payload_str[:idx] + ' xmlns=""' + payload_str[idx:]
+
+        envelope = f"""<message xmlns="https://xml-pipeline.org/ns/envelope/v1">
+  <meta>
+    <from>{from_id}</from>
+    <to>{to_id}</to>
+    <thread>{thread_id}</thread>
+  </meta>
+  {payload_str}
+</message>"""
+        return envelope.encode('utf-8')
 
     async def _reinject_responses(self, state: MessageState) -> None:
         """Push handler responses back into the queue for next iteration."""
@@ -498,6 +691,7 @@ class ConfigLoader:
             max_concurrent_pipelines=raw.get("max_concurrent_pipelines", 50),
             max_concurrent_handlers=raw.get("max_concurrent_handlers", 20),
             max_concurrent_per_agent=raw.get("max_concurrent_per_agent", 5),
+            llm_config=raw.get("llm", {}),
         )
 
         for entry in raw.get("listeners", []):
@@ -533,13 +727,91 @@ class ConfigLoader:
 # ============================================================================
 
 async def bootstrap(config_path: str = "config/organism.yaml") -> StreamPump:
-    """Load config and create pump."""
+    """Load config, create pump, initialize root thread, and inject boot message."""
+    from datetime import datetime, timezone
+    from dotenv import load_dotenv
+    from agentserver.primitives import Boot, handle_boot
+    from agentserver.primitives import (
+        TodoUntil, TodoComplete,
+        handle_todo_until, handle_todo_complete,
+    )
+
+    # Load .env file if present
+    load_dotenv()
+
     config = ConfigLoader.load(config_path)
     print(f"Organism: {config.name}")
     print(f"Listeners: {len(config.listeners)}")
 
     pump = StreamPump(config)
+
+    # Register system listeners first
+    boot_listener_config = ListenerConfig(
+        name="system.boot",
+        payload_class_path="agentserver.primitives.Boot",
+        handler_path="agentserver.primitives.handle_boot",
+        description="System boot handler - initializes organism",
+        is_agent=False,
+        payload_class=Boot,
+        handler=handle_boot,
+    )
+    pump.register_listener(boot_listener_config)
+
+    # Register TodoUntil handler (agents register watchers)
+    todo_until_config = ListenerConfig(
+        name="system.todo",
+        payload_class_path="agentserver.primitives.TodoUntil",
+        handler_path="agentserver.primitives.handle_todo_until",
+        description="System todo handler - registers watchers",
+        is_agent=False,
+        payload_class=TodoUntil,
+        handler=handle_todo_until,
+    )
+    pump.register_listener(todo_until_config)
+
+    # Register TodoComplete handler (agents close watchers)
+    todo_complete_config = ListenerConfig(
+        name="system.todo-complete",
+        payload_class_path="agentserver.primitives.TodoComplete",
+        handler_path="agentserver.primitives.handle_todo_complete",
+        description="System todo handler - closes watchers",
+        is_agent=False,
+        payload_class=TodoComplete,
+        handler=handle_todo_complete,
+    )
+    pump.register_listener(todo_complete_config)
+
+    # Register all user-defined listeners
     pump.register_all()
+
+    # Configure LLM router if llm section present
+    if config.llm_config:
+        from agentserver.llm import configure_router
+        configure_router(config.llm_config)
+        print(f"LLM backends: {len(config.llm_config.get('backends', []))}")
+
+    # Initialize root thread in registry
+    registry = get_registry()
+    root_uuid = registry.initialize_root(config.name)
+    print(f"Root thread: {root_uuid} ({registry.root_chain})")
+
+    # Create and inject the boot message
+    boot_payload = Boot(
+        organism_name=config.name,
+        timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        listener_count=len(pump.listeners),
+    )
+
+    # Wrap boot payload in envelope
+    boot_envelope = pump._wrap_in_envelope(
+        payload=boot_payload,
+        from_id="system",
+        to_id="system.boot",
+        thread_id=root_uuid,
+    )
+
+    # Inject boot message (will be processed when pump.run() is called)
+    await pump.inject(boot_envelope, thread_id=root_uuid, from_id="system")
 
     print(f"Routing: {list(pump.routing_table.keys())}")
     return pump
