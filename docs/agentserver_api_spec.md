@@ -146,13 +146,77 @@ Response:
 
 ## WebSocket API
 
+### Main Control Channel
+
 Endpoint: `wss://host:443/ws`
 
-### Connection
+#### Connection
 1. Client connects to `/ws`
 2. Server sends `connected` event with current state snapshot
 3. Server pushes events as they occur
 4. Client can send control commands
+
+---
+
+### Message Log Stream
+
+Endpoint: `wss://host:443/ws/messages`
+
+Dedicated stream of all messages flowing through the organism. Clients can filter by agent to reconstruct individual message buffers in real-time.
+
+#### Connection
+```json
+{
+  "cmd": "subscribe",
+  "filter": {
+    "agents": ["greeter", "shouter"],  // optional, empty = all
+    "threads": ["thread-uuid"],         // optional, empty = all
+    "payload_types": ["GreetingResponse"] // optional
+  }
+}
+```
+
+#### Message Event
+Every message that flows through the pump:
+```json
+{
+  "id": "msg-uuid",
+  "thread_id": "thread-uuid",
+  "from": "greeter",
+  "to": "shouter",
+  "payload_type": "GreetingResponse",
+  "payload": {
+    "message": "Hello Dan!",
+    "original_sender": "console"
+  },
+  "timestamp": "2024-01-15T10:30:01.123Z",
+  "slot_index": 3
+}
+```
+
+#### Use Case: Reconstructing Agent Buffers
+
+Client-side, filter messages by agent to build each agent's context buffer:
+
+```javascript
+const buffers = {};  // agent_name -> messages[]
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  // Add to sender's outbox
+  buffers[msg.from] = buffers[msg.from] || [];
+  buffers[msg.from].push({ direction: 'out', ...msg });
+
+  // Add to receiver's inbox
+  buffers[msg.to] = buffers[msg.to] || [];
+  buffers[msg.to].push({ direction: 'in', ...msg });
+};
+```
+
+This allows the GUI to show each agent's "conversation view" in real-time.
+
+---
 
 ### Event Types
 
