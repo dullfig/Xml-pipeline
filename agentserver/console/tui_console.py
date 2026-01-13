@@ -76,6 +76,7 @@ class OutputBuffer:
         self.max_lines = max_lines
         self._lines: List[str] = []
         self.buffer = Buffer(read_only=True, name="output")
+        self._user_scrolled = False  # Track if user manually scrolled
 
     def append(self, text: str, style: str = "output"):
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -87,40 +88,47 @@ class OutputBuffer:
         self._update_buffer()
 
     def _update_buffer(self):
+        """Update buffer content. Auto-scroll only if user hasn't scrolled up."""
         if len(self._lines) > self.max_lines:
             self._lines = self._lines[-self.max_lines:]
 
-        was_at_end = self.is_at_bottom()
         text = "\n".join(self._lines)
 
-        if was_at_end:
-            self.buffer.set_document(
-                Document(text=text, cursor_position=len(text)),
-                bypass_readonly=True
-            )
-        else:
+        # If user scrolled up, preserve their position; otherwise snap to bottom
+        if self._user_scrolled:
             old_pos = self.buffer.cursor_position
             self.buffer.set_document(
                 Document(text=text, cursor_position=min(old_pos, len(text))),
                 bypass_readonly=True
             )
+        else:
+            # Auto-scroll to bottom for new content
+            self.buffer.set_document(
+                Document(text=text, cursor_position=len(text)),
+                bypass_readonly=True
+            )
 
     def is_at_bottom(self) -> bool:
-        """Check if output is at the very bottom (with 1-line tolerance)."""
-        text_len = len(self.buffer.text)
-        if text_len == 0:
-            return True
-        # If cursor is after the start of the last line, we're "at bottom"
-        last_line_start = self.buffer.text.rfind('\n') + 1
-        return self.buffer.cursor_position >= last_line_start
+        """Check if we should show the spacer (user hasn't scrolled away)."""
+        return not self._user_scrolled
 
     def scroll_to_bottom(self):
-        """Force cursor to the end of buffer."""
+        """Force cursor to the end and mark as 'at bottom'."""
         self.buffer.cursor_position = len(self.buffer.text)
+        self._user_scrolled = False  # Reset flag when explicitly scrolling to bottom
+
+    def mark_scrolled(self):
+        """Called when user manually scrolls up."""
+        self._user_scrolled = True
+
+    def mark_unscrolled(self):
+        """Called when user scrolls to bottom."""
+        self._user_scrolled = False
 
     def clear(self):
         self._lines.clear()
         self.buffer.set_document(Document(text=""), bypass_readonly=True)
+        self._user_scrolled = False
 
 
 # ============================================================================
