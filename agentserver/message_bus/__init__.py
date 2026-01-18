@@ -6,15 +6,20 @@ The message pump handles message flow through the organism:
 
 Key classes:
     StreamPump      Main pump class (queue-backed, aiostream-powered)
+    SystemPipeline  Entry point for external messages (console, webhook)
     ConfigLoader    Load organism.yaml and resolve imports
     Listener        Runtime listener with handler and routing info
     MessageState    Message flowing through pipeline steps
 
 Usage:
-    from agentserver.message_bus import StreamPump, bootstrap
+    from agentserver.message_bus import StreamPump, SystemPipeline, bootstrap
 
     pump = await bootstrap("config/organism.yaml")
-    await pump.inject(initial_message, thread_id, from_id)
+    system = SystemPipeline(pump)
+
+    # Inject from console
+    thread_id = await system.inject_console("@greeter Dan", user="admin")
+
     await pump.run()
 """
 
@@ -32,6 +37,11 @@ from agentserver.message_bus.message_state import (
     HandlerMetadata,
 )
 
+from agentserver.message_bus.system_pipeline import (
+    SystemPipeline,
+    ExternalMessage,
+)
+
 __all__ = [
     "StreamPump",
     "ConfigLoader",
@@ -41,4 +51,6 @@ __all__ = [
     "MessageState",
     "HandlerMetadata",
     "bootstrap",
+    "SystemPipeline",
+    "ExternalMessage",
 ]

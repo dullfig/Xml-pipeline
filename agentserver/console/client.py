@@ -133,12 +133,13 @@ class ConsoleClient:
 Available commands:
   /help       - Show this help
   /status     - Show server status
-  /listeners  - List active listeners
+  /listeners  - List available targets
+  /targets    - Alias for /listeners
   /quit       - Disconnect and exit
 
 Send messages:
-  @listener message   - Send message to a listener
-  message            - Send to default listener
+  @target message   - Send message to a target listener
+                      Example: @greeter Hello there!
 """)
 
     async def handle_command(self, line: str) -> bool:
@@ -161,22 +162,31 @@ Send messages:
             if resp:
                 threads = resp.get("threads", 0)
                 print(f"Active threads: {threads}")
-        elif line == "/listeners":
+        elif line == "/listeners" or line == "/targets":
             resp = await self.send_command({"type": "listeners"})
             if resp:
                 listeners = resp.get("listeners", [])
                 if listeners:
-                    print("Active listeners:")
+                    print("Available targets:")
                     for name in listeners:
                         print(f"  - {name}")
                 else:
-                    print("No active listeners")
+                    print("No targets available (pipeline not running)")
         elif line.startswith("/"):
             print(f"Unknown command: {line}")
+        elif line.startswith("@"):
+            # Send message to target: @target message
+            resp = await self.send_command({"type": "send", "raw": line})
+            if resp:
+                if resp.get("type") == "sent":
+                    thread_id = resp.get("thread_id", "")[:8]
+                    target = resp.get("target", "unknown")
+                    print(f"Sent to {target} (thread: {thread_id}...)")
+                elif resp.get("type") == "error":
+                    print(f"Error: {resp.get('error')}")
         else:
-            # Send as message
-            # TODO: Implement message sending when pump is connected
-            print(f"Message sending not yet implemented: {line}")
+            print("Use @target message to send. Example: @greeter Hello!")
+            print("Type /listeners to see available targets.")
 
         return True
 

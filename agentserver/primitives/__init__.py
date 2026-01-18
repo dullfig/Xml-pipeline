@@ -14,6 +14,7 @@ from agentserver.primitives.todo import (
     handle_todo_until,
     handle_todo_complete,
 )
+from agentserver.primitives.text_input import TextInput, TextOutput
 
 __all__ = [
     "Boot",
@@ -24,4 +25,6 @@ __all__ = [
     "TodoClosed",
     "handle_todo_until",
     "handle_todo_complete",
+    "TextInput",
+    "TextOutput",
 ]
