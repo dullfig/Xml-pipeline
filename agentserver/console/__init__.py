@@ -1,10 +1,12 @@
 """
-console — Secure console interface for organism operators.
+console — Console interfaces for xml-pipeline.
 
-Provides password-protected access to privileged operations
-via local keyboard input only (no network exposure).
+Provides:
+- SecureConsole: Local keyboard-only console (no network)
+- ConsoleClient: Network client connecting to server with auth
 """
 
 from agentserver.console.secure_console import SecureConsole, PasswordManager
+from agentserver.console.client import ConsoleClient
 
-__all__ = ["SecureConsole", "PasswordManager"]
+__all__ = ["SecureConsole", "PasswordManager", "ConsoleClient"]
