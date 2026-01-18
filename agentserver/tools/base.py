@@ -84,7 +84,14 @@ def tool(func: Callable) -> Callable:
     for param_name, param in sig.parameters.items():
         param_info = {"name": param_name}
         if param.annotation != inspect.Parameter.empty:
-            param_info["type"] = param.annotation.__name__
+            ann = param.annotation
+            # Handle both string annotations (from __future__ import annotations) and type objects
+            if isinstance(ann, str):
+                param_info["type"] = ann
+            elif hasattr(ann, "__name__"):
+                param_info["type"] = ann.__name__
+            else:
+                param_info["type"] = str(ann)
         if param.default != inspect.Parameter.empty:
             param_info["default"] = param.default
         parameters[param_name] = param_info

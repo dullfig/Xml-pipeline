@@ -1,138 +1,108 @@
-# llm_connection.py
-import asyncio
-import logging
-from abc import ABC, abstractmethod
-from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+"""
+LLM Connection module - provides llm_pool for backward compatibility.
 
-logger = logging.getLogger("agentserver.llm")
+The actual implementation lives in agentserver.llm.router.
+This module re-exports the router as llm_pool for listeners.
+"""
 
+from agentserver.llm.router import get_router, configure_router, LLMRouter
+from agentserver.llm.backend import (
+    LLMRequest,
+    LLMResponse,
+    Backend,
+    BackendError,
+    RateLimitError,
+    ProviderError,
+)
 
-@dataclass
-class LLMRequest:
-    """Standardized request shape passed to all providers."""
-    messages: List[Dict[str, str]]
-    model: Optional[str] = None  # provider may ignore if fixed in config
-    temperature: float = 0.7
-    max_tokens: Optional[int] = None
-    tools: Optional[List[Dict]] = None
-    stream: bool = False
-    # extra provider-specific kwargs
-    extra: Dict[str, Any] = None
-
-
-@dataclass
-class LLMResponse:
-    """Unified response shape."""
-    content: str
-    usage: Dict[str, int]  # prompt_tokens, completion_tokens, total_tokens
-    finish_reason: str
-    raw: Any = None  # provider-specific raw response for debugging
+__all__ = [
+    "llm_pool",
+    "LLMRequest",
+    "LLMResponse",
+    "Backend",
+    "BackendError",
+    "RateLimitError",
+    "ProviderError",
+    "configure_router",
+]
 
 
-class LLMConnection(ABC):
-    """Abstract base class for all LLM providers."""
-
-    def __init__(self, name: str, config: dict):
-        self.name = name
-        self.config = config
-        self.rate_limit_tpm: Optional[int] = config.get("rate-limit", {}).get("tokens-per-minute")
-        self.max_concurrent: Optional[int] = config.get("max-concurrent-requests")
-        self._semaphore = asyncio.Semaphore(self.max_concurrent or 20)
-        self._token_bucket = None  # optional token bucket impl later
-
-    @abstractmethod
-    async def chat_completion(self, request: LLMRequest) -> LLMResponse:
-        """Non-streaming completion."""
-        pass
-
-    @abstractmethod
-    async def stream_completion(self, request: LLMRequest):
-        """Async generator yielding partial content strings."""
-        pass
-
-    async def __aenter__(self):
-        await self._semaphore.acquire()
-        return self
-
-    async def __aexit__(self, exc_type, exc, tb):
-        self._semaphore.release()
-
-
-class LLMConnectionPool:
+class LLMPool:
     """
-    Global, owner-controlled pool of LLM connections.
-    Populated at boot or via signed privileged-command.
+    Wrapper around the LLM router that provides a simpler interface for listeners.
+
+    Usage:
+        from agentserver.listeners.llm_connection import llm_pool
+
+        response = await llm_pool.complete(
+            model="grok-2",
+            messages=[{"role": "user", "content": "Hello"}],
+            temperature=0.7,
+        )
     """
 
     def __init__(self):
-        self._pools: Dict[str, LLMConnection] = {}
-        self._lock = asyncio.Lock()
+        self._router: LLMRouter | None = None
 
-    async def register(self, name: str, config: dict) -> None:
+    @property
+    def router(self) -> LLMRouter:
+        """Get or create the router instance."""
+        if self._router is None:
+            self._router = get_router()
+        return self._router
+
+    def configure(self, config: dict) -> None:
+        """Configure the underlying router."""
+        self._router = configure_router(config)
+
+    async def complete(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        *,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        tools: list[dict] | None = None,
+        agent_id: str | None = None,
+    ) -> str:
         """
-        Add or replace a pool entry.
-        Called only from boot config or validated privileged-command handler.
+        Execute a completion and return just the content string.
+
+        This is the simplified interface for listeners - returns just the
+        response text, not the full LLMResponse object.
         """
-        async with self._lock:
-            provider_type = config.get("provider")
-            if provider_type == "xai":
-                connection = XAIConnection(name, config)
-            elif provider_type == "anthropic":
-                connection = AnthropicConnection(name, config)
-            elif provider_type == "ollama" or provider_type == "local":
-                connection = OllamaConnection(name, config)
-            else:
-                raise ValueError(f"Unknown LLM provider: {provider_type}")
+        response = await self.router.complete(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            agent_id=agent_id,
+        )
+        return response.content
 
-            old = self._pools.get(name)
-            if old:
-                logger.info(f"Replacing LLM pool '{name}'")
-            else:
-                logger.info(f"Adding LLM pool '{name}'")
+    async def complete_full(
+        self,
+        model: str,
+        messages: list[dict[str, str]],
+        **kwargs,
+    ) -> LLMResponse:
+        """
+        Execute a completion and return the full LLMResponse.
 
-            self._pools[name] = connection
+        Use this when you need access to usage stats, finish_reason, etc.
+        """
+        return await self.router.complete(model=model, messages=messages, **kwargs)
 
-    async def remove(self, name: str) -> None:
-        async with self._lock:
-            if name in self._pools:
-                del self._pools[name]
-                logger.info(f"Removed LLM pool '{name}'")
+    def get_usage(self, agent_id: str):
+        """Get usage stats for an agent."""
+        return self.router.get_agent_usage(agent_id)
 
-    def get(self, name: str) -> LLMConnection:
-        """Synchronous get — safe because pools don't change mid-request."""
-        try:
-            return self._pools[name]
-        except KeyError:
-            raise KeyError(f"LLM pool '{name}' not configured") from None
-
-    def list_names(self) -> List[str]:
-        return list(self._pools.keys())
+    async def close(self):
+        """Clean up resources."""
+        if self._router:
+            await self._router.close()
 
 
-# Example concrete providers (stubs — flesh out with real HTTP later)
-
-class XAIConnection(LLMConnection):
-    async def chat_completion(self, request: LLMRequest) -> LLMResponse:
-        # TODO: real async httpx to https://api.x.ai/v1/chat/completions
-        raise NotImplementedError
-
-    async def stream_completion(self, request: LLMRequest):
-        # yield partial deltas
-        yield "streaming not yet implemented"
-
-
-class AnthropicConnection(LLMConnection):
-    async def chat_completion(self, request: LLMRequest) -> LLMResponse:
-        raise NotImplementedError
-
-    async def stream_completion(self, request: LLMRequest):
-        raise NotImplementedError
-
-
-class OllamaConnection(LLMConnection):
-    async def chat_completion(self, request: LLMRequest) -> LLMResponse:
-        raise NotImplementedError
-
-    async def stream_completion(self, request: LLMRequest):
-        raise NotImplementedError
+# Global instance
+llm_pool = LLMPool()
