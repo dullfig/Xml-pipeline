@@ -23,6 +23,7 @@ FEATURES: dict[str, tuple[Callable[[], bool], str]] = {
     "search": (lambda: _check_import("duckduckgo_search"), "DuckDuckGo search"),
     "auth": (lambda: _check_import("pyotp") and _check_import("argon2"), "TOTP auth"),
     "server": (lambda: _check_import("websockets"), "WebSocket server"),
+    "lsp": (lambda: _check_import("lsp_client"), "LSP client for config editor"),
 }
 
 

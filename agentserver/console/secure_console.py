@@ -494,7 +494,12 @@ class SecureConsole:
         cprint("  /buffer <thread>   Inspect thread's context buffer", Colors.DIM)
         cprint("  /monitor <thread>  Show recent messages from thread", Colors.DIM)
         cprint("  /monitor *         Show recent messages from all threads", Colors.DIM)
-        cprint("  /config            View current configuration", Colors.DIM)
+        cprint("")
+        cprint("Configuration:", Colors.CYAN)
+        cprint("  /config            Show current config", Colors.DIM)
+        cprint("  /config -e         Edit organism.yaml", Colors.DIM)
+        cprint("  /config @name      Edit listener config", Colors.DIM)
+        cprint("  /config --list     List listener configs", Colors.DIM)
         cprint("")
         cprint("Protected (require password):", Colors.YELLOW)
         cprint("  /restart           Restart the pipeline", Colors.DIM)
@@ -670,15 +675,185 @@ class SecureConsole:
         cprint(f"         {payload_str}", Colors.DIM)
 
     async def _cmd_config(self, args: str) -> None:
-        """View current configuration (read-only)."""
+        """
+        Edit configuration files.
+
+        /config           - Edit organism.yaml
+        /config @name     - Edit listener config (e.g., /config @greeter)
+        /config --list    - List available listener configs
+        /config --show    - Show current config (read-only)
+        """
+        args = args.strip() if args else ""
+
+        if args == "--list":
+            await self._config_list()
+        elif args == "--show" or args == "":
+            await self._config_show()
+        elif args.startswith("@"):
+            listener_name = args[1:].strip()
+            if listener_name:
+                await self._config_edit_listener(listener_name)
+            else:
+                cprint("Usage: /config @listener_name", Colors.RED)
+        elif args == "--edit" or args == "-e":
+            await self._config_edit_organism()
+        else:
+            cprint(f"Unknown option: {args}", Colors.RED)
+            cprint("Usage:", Colors.DIM)
+            cprint("  /config           Show current config", Colors.DIM)
+            cprint("  /config -e        Edit organism.yaml", Colors.DIM)
+            cprint("  /config @name     Edit listener config", Colors.DIM)
+            cprint("  /config --list    List listener configs", Colors.DIM)
+
+    async def _config_show(self) -> None:
+        """Show current configuration (read-only)."""
         cprint(f"\nOrganism: {self.pump.config.name}", Colors.CYAN)
         cprint(f"Port: {self.pump.config.port}", Colors.DIM)
         cprint(f"Thread scheduling: {self.pump.config.thread_scheduling}", Colors.DIM)
         cprint(f"Max concurrent pipelines: {self.pump.config.max_concurrent_pipelines}", Colors.DIM)
         cprint(f"Max concurrent handlers: {self.pump.config.max_concurrent_handlers}", Colors.DIM)
         cprint(f"Max concurrent per agent: {self.pump.config.max_concurrent_per_agent}", Colors.DIM)
-        cprint("\nTo modify: /quit -> edit organism.yaml -> restart", Colors.DIM)
+        cprint("\nUse /config -e to edit organism.yaml", Colors.DIM)
+        cprint("Use /config @listener to edit a listener config", Colors.DIM)
         cprint("")
+
+    async def _config_list(self) -> None:
+        """List available listener configs."""
+        from agentserver.config import get_listener_config_store
+
+        store = get_listener_config_store()
+        listeners = store.list_listeners()
+
+        cprint("\nListener configurations:", Colors.CYAN)
+        cprint(f"Directory: {store.listeners_dir}", Colors.DIM)
+        cprint("")
+
+        if not listeners:
+            cprint("  No listener configs found.", Colors.DIM)
+            cprint("  Use /config @name to create one.", Colors.DIM)
+        else:
+            for name in sorted(listeners):
+                config = store.get(name)
+                agent_tag = "[agent]" if config.agent else "[tool]" if config.tool else ""
+                cprint(f"  @{name:20} {agent_tag} {config.description or ''}", Colors.DIM)
+
+        # Also show registered listeners without config files
+        unconfigured = [
+            name for name in self.pump.listeners.keys()
+            if name not in listeners
+        ]
+        if unconfigured:
+            cprint("\nRegistered listeners without config files:", Colors.YELLOW)
+            for name in sorted(unconfigured):
+                listener = self.pump.listeners[name]
+                agent_tag = "[agent]" if listener.is_agent else ""
+                cprint(f"  @{name:20} {agent_tag} {listener.description}", Colors.DIM)
+
+        cprint("")
+
+    async def _config_edit_organism(self) -> None:
+        """Edit organism.yaml in the full-screen editor."""
+        from agentserver.console.editor import edit_text_async
+        from agentserver.config.schema import ensure_schemas
+        from agentserver.config.split_loader import (
+            get_organism_yaml_path,
+            load_organism_yaml_content,
+            save_organism_yaml_content,
+        )
+
+        # Ensure schemas are written for LSP
+        try:
+            ensure_schemas()
+        except Exception as e:
+            cprint(f"Warning: Could not write schemas: {e}", Colors.YELLOW)
+
+        # Find organism.yaml
+        config_path = get_organism_yaml_path()
+        if config_path is None:
+            cprint("No organism.yaml found.", Colors.RED)
+            cprint("Searched in:", Colors.DIM)
+            cprint("  ~/.xml-pipeline/organism.yaml", Colors.DIM)
+            cprint("  ./organism.yaml", Colors.DIM)
+            cprint("  ./config/organism.yaml", Colors.DIM)
+            return
+
+        # Load content
+        try:
+            content = load_organism_yaml_content(config_path)
+        except Exception as e:
+            cprint(f"Failed to load config: {e}", Colors.RED)
+            return
+
+        # Edit
+        cprint(f"Editing: {config_path}", Colors.CYAN)
+        cprint("Press Ctrl+S to save, Ctrl+Q to cancel", Colors.DIM)
+        cprint("")
+
+        edited_text, saved = await edit_text_async(
+            content,
+            title=f"organism.yaml ({config_path.name})",
+            schema_type="organism",
+        )
+
+        if saved and edited_text is not None:
+            try:
+                save_organism_yaml_content(config_path, edited_text)
+                cprint("Configuration saved.", Colors.GREEN)
+                cprint("Note: Restart required for changes to take effect.", Colors.YELLOW)
+            except yaml.YAMLError as e:
+                cprint(f"Invalid YAML: {e}", Colors.RED)
+            except Exception as e:
+                cprint(f"Failed to save: {e}", Colors.RED)
+        else:
+            cprint("Edit cancelled.", Colors.DIM)
+
+    async def _config_edit_listener(self, name: str) -> None:
+        """Edit a listener config in the full-screen editor."""
+        from agentserver.config import get_listener_config_store
+        from agentserver.console.editor import edit_text_async
+        from agentserver.config.schema import ensure_schemas
+
+        # Ensure schemas are written for LSP
+        try:
+            ensure_schemas()
+        except Exception as e:
+            cprint(f"Warning: Could not write schemas: {e}", Colors.YELLOW)
+
+        store = get_listener_config_store()
+
+        # Load or create content
+        if store.exists(name):
+            content = store.load_yaml(name)
+            cprint(f"Editing: {store.path_for(name)}", Colors.CYAN)
+        else:
+            # Check if it's a registered listener
+            if name in self.pump.listeners:
+                cprint(f"Creating new config for registered listener: {name}", Colors.CYAN)
+            else:
+                cprint(f"Creating new config for: {name}", Colors.CYAN)
+            content = store._default_template(name)
+
+        cprint("Press Ctrl+S to save, Ctrl+Q to cancel", Colors.DIM)
+        cprint("")
+
+        # Edit
+        edited_text, saved = await edit_text_async(
+            content,
+            title=f"{name}.yaml",
+            schema_type="listener",
+        )
+
+        if saved and edited_text is not None:
+            try:
+                path = store.save_yaml(name, edited_text)
+                cprint(f"Saved: {path}", Colors.GREEN)
+                cprint("Note: Restart required for changes to take effect.", Colors.YELLOW)
+            except yaml.YAMLError as e:
+                cprint(f"Invalid YAML: {e}", Colors.RED)
+            except Exception as e:
+                cprint(f"Failed to save: {e}", Colors.RED)
+        else:
+            cprint("Edit cancelled.", Colors.DIM)
 
     # ------------------------------------------------------------------
     # Commands: Protected
